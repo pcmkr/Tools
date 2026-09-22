@@ -17,12 +17,17 @@
 
 .EXAMPLE
     .\Export-ADGroupMembership.ps1 -OutputDirectory C:\Temp\ADExport -ExpandNested
+
+.EXAMPLE
+    .\Export-ADGroupMembership.ps1 -Domain corp.example.com -ExpandNested -IncludeEmptyGroups
 #>
 
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = (Join-Path $PWD ("AD-Group-Export-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
     [string]$SearchBase,
+    [Alias("Server","DomainController")]
+    [string]$Domain,
     [string]$GroupFilter = "*",
     [switch]$ExpandNested,
     [switch]$IncludeEmptyGroups,
@@ -34,6 +39,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Import-Module ActiveDirectory -ErrorAction Stop
+
+$adServerParams = @{}
+if ($Domain) {
+    $adServerParams.Server = $Domain
+}
 
 function Get-ParentOU {
     param([Parameter(Mandatory)][string]$DistinguishedName)
@@ -61,8 +71,11 @@ $groupParams = @{
 }
 if ($SearchBase) { $groupParams.SearchBase = $SearchBase }
 
+if ($Domain) {
+    Write-Host ("Domena / serwer AD: {0}" -f $Domain) -ForegroundColor Cyan
+}
 Write-Host "Pobieranie grup AD..." -ForegroundColor Cyan
-$groups = @(Get-ADGroup @groupParams | Sort-Object Name)
+$groups = @(Get-ADGroup @groupParams @adServerParams | Sort-Object Name)
 Write-Host ("Znaleziono grup: {0}" -f $groups.Count) -ForegroundColor Cyan
 
 $objectCache = @{}
@@ -78,16 +91,16 @@ function Get-ADObjectDetails {
     try {
         switch ($Member.ObjectClass) {
             "user" {
-                $obj = Get-ADUser -Identity $Member.DistinguishedName -Properties DisplayName,UserPrincipalName,mail,Enabled,SID,DistinguishedName,SamAccountName
+                $obj = Get-ADUser -Identity $Member.DistinguishedName -Properties DisplayName,UserPrincipalName,mail,Enabled,SID,DistinguishedName,SamAccountName @adServerParams
             }
             "computer" {
-                $obj = Get-ADComputer -Identity $Member.DistinguishedName -Properties DNSHostName,Enabled,SID,DistinguishedName,SamAccountName
+                $obj = Get-ADComputer -Identity $Member.DistinguishedName -Properties DNSHostName,Enabled,SID,DistinguishedName,SamAccountName @adServerParams
             }
             "group" {
-                $obj = Get-ADGroup -Identity $Member.DistinguishedName -Properties mail,GroupCategory,GroupScope,SID,DistinguishedName,SamAccountName
+                $obj = Get-ADGroup -Identity $Member.DistinguishedName -Properties mail,GroupCategory,GroupScope,SID,DistinguishedName,SamAccountName @adServerParams
             }
             default {
-                $obj = Get-ADObject -Identity $Member.DistinguishedName -Properties mail,SID,DistinguishedName
+                $obj = Get-ADObject -Identity $Member.DistinguishedName -Properties mail,SID,DistinguishedName @adServerParams
             }
         }
 
@@ -214,7 +227,7 @@ function Expand-GroupMembership {
     )
 
     try {
-        $members = @(Get-ADGroupMember -Identity $CurrentGroupDN -ErrorAction Stop)
+        $members = @(Get-ADGroupMember -Identity $CurrentGroupDN -ErrorAction Stop @adServerParams)
     }
     catch {
         $errors.Add([PSCustomObject]@{
@@ -281,7 +294,7 @@ foreach ($group in $groups) {
     Write-Progress -Activity "Eksport członkostwa grup AD" -Status ("{0}/{1}: {2}" -f $counter, $groups.Count, $group.Name) -PercentComplete (($counter / [math]::Max($groups.Count, 1)) * 100)
 
     try {
-        $directMembers = @(Get-ADGroupMember -Identity $group.DistinguishedName -ErrorAction Stop)
+        $directMembers = @(Get-ADGroupMember -Identity $group.DistinguishedName -ErrorAction Stop @adServerParams)
 
         if ($directMembers.Count -eq 0) {
             if ($IncludeEmptyGroups) {
