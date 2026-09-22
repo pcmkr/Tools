@@ -1,11 +1,60 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Eksportuje użytkowników, Safe, członków Safe, konta i macierz dostępu z CyberArk PAM.
+    Eksportuje użytkowników, Safe, członków Safe, konta i macierz dostępu z CyberArk PAM.
+
 .DESCRIPTION
-  Tworzy: PAM-Users.csv, PAM-Safes.csv, PAM-SafeMembers.csv, PAM-Accounts.csv,
-  PAM-AccountAccess.csv, opcjonalnie PAM-EffectiveAccess.csv oraz Errors.csv.
-  Uprawnienia do konta są wyprowadzane z uprawnień członka do Safe, w którym konto się znajduje.
+    Korzysta z CyberArk PVWA REST API. Tworzy raporty PAM-Users.csv, PAM-Safes.csv,
+    PAM-SafeMembers.csv, PAM-Accounts.csv, PAM-AccountAccess.csv, PAM-EffectiveAccess.csv
+    oraz Errors.csv, jeśli wystąpią problemy.
+
+.PARAMETER PVWAURL
+    Bazowy URL PVWA, np. https://pvwa.example.com/PasswordVault.
+
+.PARAMETER AuthType
+    Metoda logowania: CyberArk, LDAP albo Radius.
+
+.PARAMETER Credential
+    Opcjonalny PSCredential. Jeśli brak, skrypt wywoła Get-Credential.
+
+.PARAMETER OutputDirectory
+    Katalog wynikowy raportu.
+
+.PARAMETER ExpandADGroups
+    Rozwija grupy AD będące członkami Safe do konkretnych użytkowników.
+
+.PARAMETER ADDomain
+    Domena AD używana do rozwijania grup, np. corp.example.com.
+
+.PARAMETER ADServer
+    Opcjonalny konkretny kontroler domeny.
+
+.PARAMETER SkipUsers
+    Pomija endpoint /api/Users, gdy konto raportujące nie ma prawa do listy użytkowników PAM.
+
+.PARAMETER PageSize
+    Liczba obiektów pobieranych na stronę API.
+
+.PARAMETER Encoding
+    Kodowanie plików CSV.
+
+.PARAMETER Delimiter
+    Separator CSV.
+
+.EXAMPLE
+    .\Export-CyberArkAccess.ps1 -PVWAURL "https://pvwa.example.com/PasswordVault" -AuthType LDAP
+    Eksportuje użytkowników, Safe, konta i bezpośrednie relacje dostępu.
+
+.EXAMPLE
+    .\Export-CyberArkAccess.ps1 -PVWAURL "https://pvwa.example.com/PasswordVault" -AuthType LDAP -ExpandADGroups -ADDomain "corp.example.com"
+    Dodatkowo rozwija grupy AD do efektywnych użytkowników.
+
+.EXAMPLE
+    .\Export-CyberArkAccess.ps1 -PVWAURL "https://pvwa.example.com/PasswordVault" -AuthType CyberArk -SkipUsers -OutputDirectory C:\Temp\PAMAudit
+    Pomija listę użytkowników PAM i zapisuje pozostałe raporty we wskazanym katalogu.
+
+.NOTES
+    Pełność wyniku zależy od uprawnień konta raportującego w CyberArk.
 #>
 
 [CmdletBinding()]
