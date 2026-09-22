@@ -3,23 +3,49 @@
     Eksportuje grupy Active Directory i ich członków do CSV.
 
 .DESCRIPTION
-    Tworzy:
-      - Groups.csv       - jedna linia na grupę
-      - Memberships.csv  - jedna linia na relację grupa -> członek
-      - Errors.csv       - opcjonalnie, jeśli wystąpią błędy/ostrzeżenia
+    Tworzy Groups.csv, Memberships.csv i opcjonalnie Errors.csv.
+    Obsługuje członkostwo bezpośrednie i zagnieżdżone, pełną ścieżkę członkostwa,
+    UPN, mail, stan Enabled, SID, DN/OU, scope/category grup i wykrywanie cykli.
 
-    Obsługuje członkostwo bezpośrednie i zagnieżdżone, ścieżkę członkostwa,
-    poziom zagnieżdżenia, UPN, mail, Enabled, SID, DN, OU, scope/category grup,
-    puste grupy oraz wykrywanie cyklicznych zagnieżdżeń.
+.PARAMETER OutputDirectory
+    Katalog wynikowy. Domyślnie tworzony jest katalog AD-Group-Export-<timestamp>.
 
-.EXAMPLE
-    .\Export-ADGroupMembership.ps1 -ExpandNested -IncludeEmptyGroups
+.PARAMETER SearchBase
+    Opcjonalny Distinguished Name OU/kontenera ograniczający wyszukiwanie grup.
 
-.EXAMPLE
-    .\Export-ADGroupMembership.ps1 -OutputDirectory C:\Temp\ADExport -ExpandNested
+.PARAMETER Domain
+    Domena DNS lub konkretny kontroler domeny używany przez polecenia Get-AD*.
+    Alias: -Server, -DomainController.
+
+.PARAMETER GroupFilter
+    Filtr przekazywany bezpośrednio do Get-ADGroup -Filter. Domyślnie "*".
+
+.PARAMETER ExpandNested
+    Rekurencyjnie rozwija grupy zagnieżdżone i zapisuje MembershipDepth/Path.
+
+.PARAMETER IncludeEmptyGroups
+    Dodaje do Memberships.csv także grupy bez członków.
+
+.PARAMETER Encoding
+    Kodowanie plików CSV. Domyślnie utf8BOM.
+
+.PARAMETER Delimiter
+    Separator CSV. Domyślnie średnik.
 
 .EXAMPLE
     .\Export-ADGroupMembership.ps1 -Domain corp.example.com -ExpandNested -IncludeEmptyGroups
+    Pełny eksport grup i członkostwa dla domeny.
+
+.EXAMPLE
+    .\Export-ADGroupMembership.ps1 -Domain dc01.corp.example.com -SearchBase "OU=Groups,DC=corp,DC=example,DC=com"
+    Eksport grup z konkretnego OU przez wskazany kontroler domeny.
+
+.EXAMPLE
+    .\Export-ADGroupMembership.ps1 -Domain corp.example.com -GroupFilter 'Name -like "GRP-*"' -OutputDirectory C:\Temp\ADGroups
+    Eksport tylko grup pasujących do wzorca.
+
+.NOTES
+    Wymaga modułu ActiveDirectory (RSAT). Przy -ExpandNested liczba zapytań do AD może znacząco wzrosnąć.
 #>
 
 [CmdletBinding()]
