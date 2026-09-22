@@ -2,16 +2,42 @@
 #requires -Modules ActiveDirectory
 <#
 .SYNOPSIS
-  Eksportuje stan wskazanych kont AD na podstawie listy sAMAccountName.
+    Eksportuje stan wskazanych kont AD na podstawie listy sAMAccountName.
 
 .DESCRIPTION
-  Wejście: plik tekstowy z jednym sAMAccountName w linii + domena DNS.
-  Dla dokładnego LastLogon i BadPasswordTime skrypt odpytuje wszystkie DC w domenie,
-  ponieważ lastLogon i badPasswordTime nie są replikowane.
+    Odczytuje listę sAMAccountName z pliku tekstowego i eksportuje stan kont.
+    Dla dokładnego LastLogon oraz LastBadPassword odpytuje wszystkie kontrolery domeny,
+    ponieważ atrybuty lastLogon i badPasswordTime nie są replikowane.
 
-  DisabledDateApprox jest wyliczane z metadanych replikacji userAccountControl.
-  To NIE jest gwarantowana data wyłączenia konta: userAccountControl może zmieniać się
-  także z innych powodów. Dokładną datę wyłączenia należy brać z Security Event ID 4725.
+    DisabledDateApprox pochodzi z metadanych replikacji userAccountControl i jest tylko
+    przybliżeniem. Dokładną datę wyłączenia należy ustalać z Security Event ID 4725.
+
+.PARAMETER InputFile
+    Plik tekstowy z jednym sAMAccountName w linii. Puste linie i linie zaczynające się od # są pomijane.
+
+.PARAMETER Domain
+    Domena DNS, np. corp.example.com.
+
+.PARAMETER OutputPath
+    Ścieżka wynikowego CSV. Domyślnie AD-User-State-<timestamp>.csv.
+
+.PARAMETER Delimiter
+    Separator CSV. Domyślnie średnik.
+
+.PARAMETER Encoding
+    Kodowanie CSV. Domyślnie utf8BOM.
+
+.EXAMPLE
+    .\Export-ADUserState.ps1 -InputFile .\users.txt -Domain corp.example.com
+    Eksportuje stan użytkowników z users.txt.
+
+.EXAMPLE
+    .\Export-ADUserState.ps1 -InputFile C:\Temp\users.txt -Domain corp.example.com -OutputPath C:\Temp\AD-User-State.csv
+    Eksportuje raport do wskazanego pliku.
+
+.NOTES
+    Wymaga modułu ActiveDirectory i łączności ze wszystkimi DC domeny dla możliwie dokładnych
+    wartości LastLogon i LastBadPassword.
 #>
 
 [CmdletBinding()]
