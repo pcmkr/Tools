@@ -1,63 +1,73 @@
-# AD Group Membership Export
+# Tools
 
-PowerShell export grup Active Directory i ich członkostwa do CSV.
+Prywatne repozytorium z narzędziami administracyjnymi i audytowymi dla Active Directory, CyberArk PAM i Splunk.
 
-## Co eksportuje
+## Zawartość
 
-Skrypt `Export-ADGroupMembership.ps1` tworzy:
+| Plik | Zastosowanie |
+|---|---|
+| `Export-ADGroupMembership.ps1` | Eksport grup AD, członków, członkostwa bezpośredniego i zagnieżdżonego |
+| `Export-ADUserState.ps1` | Audyt stanu wskazanych kont AD z listy sAMAccountName |
+| `Find-InactiveADUsers.ps1` | Lista kont AD nieaktywnych od wskazanej liczby dni |
+| `Export-CyberArkUsers.ps1` | Eksport użytkowników CyberArk PAM oraz ich typu/roli i VaultAuthorization |
+| `Export-CyberArkAccess.ps1` | Pełny raport CyberArk: użytkownicy, Safe, konta i prawa dostępu |
+| `Splunk-ADUserState.spl.md` | SPL do odtworzenia historii logowań i zmian stanu kont z Windows Security logs |
 
-- `Groups.csv` — jedna linia na grupę.
-- `Memberships.csv` — jedna linia na relację grupa → członek.
-- `Errors.csv` — tylko jeśli wystąpiły błędy lub wykryto cykliczne zagnieżdżenia.
-
-W `Memberships.csv` znajdują się m.in.:
-
-- grupa: nazwa, `sAMAccountName`, category, scope, mail, SID, DN i OU,
-- typ członkostwa: `Direct`, `Nested` lub `Empty`,
-- `MembershipDepth`,
-- pełna `MembershipPath`, np. `GRP-VPN > GRP-IT > jkowalski`,
-- członek: typ obiektu, nazwa, display name, `sAMAccountName`, UPN, mail, Enabled, DNS host name, SID, DN i OU,
-- dla członka będącego grupą: category i scope.
+---
 
 ## Wymagania
 
-- Windows PowerShell / PowerShell na stacji mającej dostęp do domeny,
-- moduł `ActiveDirectory` z RSAT,
-- konto mające prawo odczytu odpowiednich obiektów AD.
+### Active Directory
 
-Sprawdzenie modułu:
+Skrypty AD wymagają modułu `ActiveDirectory` z RSAT:
 
 ```powershell
 Get-Module -ListAvailable ActiveDirectory
 ```
 
-## Pobranie na innej stacji
+W razie potrzeby na Windows 10/11:
 
 ```powershell
-git clone https://github.com/pcmkr/tests.git
-cd tests
+Get-WindowsCapability -Online -Name RSAT.ActiveDirectory*
 ```
 
-## Najbardziej użyteczne uruchomienie
+### CyberArk PAM
 
-Eksport wszystkich grup, pustych grup oraz pełnego zagnieżdżenia:
+Skrypty CyberArk wymagają:
 
-```powershell
-.\Export-ADGroupMembership.ps1 -ExpandNested -IncludeEmptyGroups
-```
+- dostępu sieciowego do PVWA,
+- konta mogącego zalogować się przez wybrany mechanizm `CyberArk`, `LDAP` lub `Radius`,
+- odpowiednich uprawnień API dla raportowanych danych.
 
-Skrypt utworzy katalog w bieżącej lokalizacji, np.:
+### Splunk
 
-```text
-AD-Group-Export-20260922-113500
-```
+Zapytanie SPL zakłada obecność Windows Security Event Log w Splunku. Nazwy `index`, `sourcetype` i pól mogą wymagać dostosowania do lokalnej konfiguracji i używanego TA.
 
+---
 
-## Wskazanie domeny lub kontrolera domeny
+# Active Directory
 
-Parametr `-Domain` określa domenę DNS lub konkretny kontroler domeny używany przez wszystkie zapytania `Get-AD*`.
+## Export-ADGroupMembership.ps1
 
-Przykład z domeną:
+Eksportuje grupy AD i ich członków.
+
+Tworzy:
+
+- `Groups.csv`
+- `Memberships.csv`
+- opcjonalnie `Errors.csv`
+
+Obsługuje:
+
+- członkostwo bezpośrednie i zagnieżdżone,
+- `MembershipDepth`,
+- pełną ścieżkę członkostwa,
+- użytkowników, komputery i grupy,
+- SID, DN, OU, mail, stan Enabled,
+- scope/category grup,
+- wykrywanie cyklicznego zagnieżdżenia.
+
+### Pełny eksport
 
 ```powershell
 .\Export-ADGroupMembership.ps1 `
@@ -66,108 +76,253 @@ Przykład z domeną:
     -IncludeEmptyGroups
 ```
 
-Przykład z konkretnym kontrolerem domeny:
+### Eksport z konkretnego OU
 
 ```powershell
 .\Export-ADGroupMembership.ps1 `
-    -Domain dc01.corp.example.com `
-    -ExpandNested `
-    -IncludeEmptyGroups
+    -Domain corp.example.com `
+    -SearchBase "OU=Groups,DC=corp,DC=example,DC=com" `
+    -ExpandNested
 ```
 
-`-Server` i `-DomainController` są aliasami parametru `-Domain`.
-
-## Eksport do konkretnego katalogu
+### Filtrowanie grup
 
 ```powershell
 .\Export-ADGroupMembership.ps1 `
-    -OutputDirectory C:\Temp\ADExport `
-    -ExpandNested `
-    -IncludeEmptyGroups
-```
-
-## Tylko członkostwo bezpośrednie
-
-```powershell
-.\Export-ADGroupMembership.ps1 -IncludeEmptyGroups
-```
-
-Bez `-ExpandNested` skrypt nie schodzi do członków grup zagnieżdżonych.
-
-## Ograniczenie do konkretnego OU
-
-```powershell
-.\Export-ADGroupMembership.ps1 `
-    -SearchBase "OU=Groups,DC=example,DC=com" `
-    -ExpandNested `
-    -IncludeEmptyGroups
-```
-
-## Filtrowanie grup
-
-`-GroupFilter` jest przekazywany do `Get-ADGroup -Filter`.
-
-Przykład dla grup zaczynających się od `GRP-`:
-
-```powershell
-.\Export-ADGroupMembership.ps1 `
+    -Domain corp.example.com `
     -GroupFilter 'Name -like "GRP-*"' `
     -ExpandNested
 ```
 
-## Separator CSV
+Parametr `-Domain` przyjmuje domenę DNS lub konkretny DC. Dostępne są aliasy `-Server` i `-DomainController`.
 
-Domyślny separator to średnik (`;`), wygodny m.in. dla polskich ustawień Excela.
+---
 
-Przecinek:
+## Export-ADUserState.ps1
 
-```powershell
-.\Export-ADGroupMembership.ps1 -Delimiter ','
-```
+Audytuje wskazane konta na podstawie pliku zawierającego po jednym `sAMAccountName` w linii.
 
-## Encoding
-
-Domyślnie: `utf8BOM`, żeby polskie znaki poprawnie otwierały się w Excelu.
-
-Dostępne wartości:
-
-- `utf8`
-- `utf8BOM`
-- `unicode`
-- `ascii`
-
-Przykład:
-
-```powershell
-.\Export-ADGroupMembership.ps1 -Encoding utf8BOM
-```
-
-## Znaczenie MembershipType
-
-- `Direct` — obiekt jest bezpośrednim członkiem analizowanej grupy.
-- `Nested` — obiekt pochodzi z grupy zagnieżdżonej.
-- `Empty` — grupa nie ma członków; wiersz pojawia się przy `-IncludeEmptyGroups`.
-
-## Przykład ścieżki
+Przykład `users.txt`:
 
 ```text
-GroupName   MembershipType   MembershipDepth   MembershipPath
-GRP-VPN     Direct           1                 GRP-VPN > GRP-IT
-GRP-VPN     Nested           2                 GRP-VPN > GRP-IT > jkowalski
+jkowalski
+anowak
+svc_sql
 ```
 
-Dzięki temu eksport nie tylko pokazuje efektywne członkostwo, ale też przez jaką grupę zagnieżdżoną ono wynika.
-
-## Zalecenie do audytu
-
-Najpełniejszy wariant:
+Uruchomienie:
 
 ```powershell
-.\Export-ADGroupMembership.ps1 `
+.\Export-ADUserState.ps1 `
+    -InputFile .\users.txt `
     -Domain corp.example.com `
-    -OutputDirectory C:\Temp\AD-Audit `
-    -ExpandNested `
-    -IncludeEmptyGroups
+    -OutputPath C:\Temp\AD-User-State.csv
 ```
 
-Przy dużej domenie `-ExpandNested` może wykonać dużo zapytań do kontrolerów domeny i potrwać wyraźnie dłużej niż eksport wyłącznie członkostwa bezpośredniego.
+Raport zawiera m.in.:
+
+- Enabled,
+- przybliżoną datę wyłączenia,
+- dokładniejsze `LastLogon` z odpytaniem wszystkich DC,
+- `LastBadPassword`,
+- `PasswordLastSet`,
+- `PasswordExpired`,
+- wyliczoną datę wygaśnięcia hasła,
+- `LockedOut`,
+- `LockoutTime`,
+- datę wygaśnięcia konta.
+
+### Ważne ograniczenia
+
+`lastLogon` i `badPasswordTime` nie są replikowane, dlatego skrypt odpytuje wszystkie DC i wybiera najnowszą wartość.
+
+AD nie przechowuje dedykowanego pola "data wyłączenia konta". `DisabledDateApprox` pochodzi z metadanych `userAccountControl` i jest wartością przybliżoną. Dokładną datę należy ustalać z Windows Security Event ID 4725.
+
+---
+
+## Find-InactiveADUsers.ps1
+
+Wyszukuje konta użytkowników, które nie logowały się przez wskazaną liczbę dni.
+
+### Włączone konta nieaktywne od 90 dni
+
+```powershell
+.\Find-InactiveADUsers.ps1 `
+    -Days 90 `
+    -Domain corp.example.com
+```
+
+### Także konta wyłączone
+
+```powershell
+.\Find-InactiveADUsers.ps1 `
+    -Days 180 `
+    -Domain corp.example.com `
+    -IncludeDisabled `
+    -OutputPath C:\Temp\InactiveUsers.csv
+```
+
+Skrypt wykorzystuje `LastLogonDate`, czyli replikowany `lastLogonTimestamp`. Jest to właściwy mechanizm do raportów nieaktywności, ale nie do ustalania dokładnego czasu ostatniego logowania.
+
+Konta bez wartości `LastLogonDate` są oznaczane jako `NeverLoggedOn=True`.
+
+---
+
+# CyberArk PAM
+
+## Export-CyberArkUsers.ps1
+
+Eksportuje wyłącznie użytkowników CyberArk PAM i informacje o ich roli/autoryzacjach.
+
+Nie pobiera Safe ani kont.
+
+### LDAP
+
+```powershell
+.\Export-CyberArkUsers.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -AuthType LDAP
+```
+
+### CyberArk authentication
+
+```powershell
+.\Export-CyberArkUsers.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -AuthType CyberArk `
+    -OutputPath C:\Temp\CyberArk-Users.csv
+```
+
+Raport obejmuje m.in.:
+
+- `UserName`
+- `UserType`
+- `Source`
+- `ComponentUser`
+- `IsEnabled`
+- `IsSuspended`
+- `VaultAuthorization`
+- `DistinguishedName`
+- `Email`
+- `LastSuccessfulLoginDate`
+
+---
+
+## Export-CyberArkAccess.ps1
+
+Pełniejszy raport CyberArk PAM.
+
+Tworzy:
+
+- `PAM-Users.csv`
+- `PAM-Safes.csv`
+- `PAM-SafeMembers.csv`
+- `PAM-Accounts.csv`
+- `PAM-AccountAccess.csv`
+- `PAM-EffectiveAccess.csv`
+- opcjonalnie `Errors.csv`
+
+### Podstawowy raport
+
+```powershell
+.\Export-CyberArkAccess.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -AuthType LDAP
+```
+
+### Efektywny dostęp po rozwinięciu grup AD
+
+```powershell
+.\Export-CyberArkAccess.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -AuthType LDAP `
+    -ExpandADGroups `
+    -ADDomain corp.example.com
+```
+
+Można wskazać konkretny kontroler domeny:
+
+```powershell
+-ADServer dc01.corp.example.com
+```
+
+`PAM-AccountAccess.csv` przedstawia relację członek Safe → Safe → konto wraz z prawami.
+
+`PAM-EffectiveAccess.csv` przy `-ExpandADGroups` rozwija grupy AD do konkretnych użytkowników.
+
+Pełność danych zależy od uprawnień konta raportującego w CyberArk, zwłaszcza praw do listowania użytkowników, członków Safe i kont.
+
+---
+
+# Splunk
+
+## Splunk-ADUserState.spl.md
+
+Gotowe zapytanie SPL wykorzystujące Windows Security Event IDs m.in.:
+
+- 4624 — successful logon,
+- 4625 — failed logon,
+- 4722 — account enabled,
+- 4725 — account disabled,
+- 4740 — account locked,
+- 4767 — account unlocked,
+- 4771 — Kerberos pre-authentication failure.
+
+Przed użyciem zmień:
+
+```spl
+index=windows
+sourcetype=WinEventLog:Security
+```
+
+oraz listę:
+
+```spl
+samaccountname IN ("user1","user2","user3")
+```
+
+i domenę:
+
+```spl
+domain="CONTOSO"
+```
+
+Szczegóły oraz ograniczenia interpretacji znajdują się bezpośrednio w pliku `Splunk-ADUserState.spl.md`.
+
+---
+
+# Pobranie repozytorium
+
+Repozytorium jest prywatne, więc klonowanie wymaga uwierzytelnienia do GitHub.
+
+HTTPS:
+
+```bash
+git clone https://github.com/pcmkr/Tools.git
+cd Tools
+```
+
+SSH:
+
+```bash
+git clone git@github.com:pcmkr/Tools.git
+cd Tools
+```
+
+Aktualizacja istniejącego klonu:
+
+```bash
+git pull
+```
+
+---
+
+## PowerShell help
+
+Każdy skrypt PowerShell zawiera comment-based help. Przykłady i opis parametrów można wyświetlić lokalnie:
+
+```powershell
+Get-Help .\Export-ADUserState.ps1 -Full
+Get-Help .\Export-CyberArkUsers.ps1 -Examples
+Get-Help .\Find-InactiveADUsers.ps1 -Detailed
+```
