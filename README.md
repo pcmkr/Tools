@@ -52,6 +52,31 @@ Skrypt utworzy katalog w bieżącej lokalizacji, np.:
 AD-Group-Export-20260922-113500
 ```
 
+
+## Wskazanie domeny lub kontrolera domeny
+
+Parametr `-Domain` określa domenę DNS lub konkretny kontroler domeny używany przez wszystkie zapytania `Get-AD*`.
+
+Przykład z domeną:
+
+```powershell
+.\Export-ADGroupMembership.ps1 `
+    -Domain corp.example.com `
+    -ExpandNested `
+    -IncludeEmptyGroups
+```
+
+Przykład z konkretnym kontrolerem domeny:
+
+```powershell
+.\Export-ADGroupMembership.ps1 `
+    -Domain dc01.corp.example.com `
+    -ExpandNested `
+    -IncludeEmptyGroups
+```
+
+`-Server` i `-DomainController` są aliasami parametru `-Domain`.
+
 ## Eksport do konkretnego katalogu
 
 ```powershell
@@ -139,6 +164,7 @@ Najpełniejszy wariant:
 
 ```powershell
 .\Export-ADGroupMembership.ps1 `
+    -Domain corp.example.com `
     -OutputDirectory C:\Temp\AD-Audit `
     -ExpandNested `
     -IncludeEmptyGroups
