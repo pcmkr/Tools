@@ -1,14 +1,43 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Eksportuje użytkowników CyberArk PAM i ich role/autoryzacje do CSV.
+    Eksportuje użytkowników CyberArk PAM i ich role/autoryzacje do CSV.
 
 .DESCRIPTION
-  Skrypt korzysta wyłącznie z endpointu /api/Users.
-  Nie pobiera Safe, kont ani członkostwa w Safe.
+    Korzysta wyłącznie z endpointu /api/Users. Nie pobiera Safe, kont ani członkostwa w Safe.
+    Raport obejmuje m.in. UserType, Source, stan konta i VaultAuthorization.
+
+.PARAMETER PVWAURL
+    Bazowy URL PVWA, np. https://pvwa.example.com/PasswordVault.
+
+.PARAMETER AuthType
+    Metoda logowania: CyberArk, LDAP albo Radius.
+
+.PARAMETER Credential
+    Opcjonalny PSCredential. Jeśli brak, skrypt wywoła Get-Credential.
+
+.PARAMETER OutputPath
+    Ścieżka wynikowego CSV.
+
+.PARAMETER PageSize
+    Liczba użytkowników pobieranych na stronę API.
+
+.PARAMETER Encoding
+    Kodowanie CSV. Domyślnie utf8BOM.
+
+.PARAMETER Delimiter
+    Separator CSV. Domyślnie średnik.
 
 .EXAMPLE
-  .\Export-CyberArkUsers.ps1 -PVWAURL "https://pvwa.example.com/PasswordVault" -AuthType LDAP
+    .\Export-CyberArkUsers.ps1 -PVWAURL "https://pvwa.example.com/PasswordVault" -AuthType LDAP
+    Loguje się przez LDAP i eksportuje użytkowników PAM.
+
+.EXAMPLE
+    .\Export-CyberArkUsers.ps1 -PVWAURL "https://pvwa.example.com/PasswordVault" -AuthType CyberArk -OutputPath C:\Temp\CyberArk-Users.csv
+    Eksportuje użytkowników do wskazanego pliku.
+
+.NOTES
+    Konto używane do raportu musi mieć uprawnienie pozwalające odczytać /api/Users.
 #>
 
 [CmdletBinding()]
