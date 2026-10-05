@@ -6,7 +6,9 @@
 
 .DESCRIPTION
     Skrypt jest przeznaczony dla jednego, stałego typu konta opisanego w JSON.
-    Nazwa Safe oraz login konta są przekazywane jako parametry.
+    Nazwa Safe jest przekazywana jako parametr. PVWAURL, AuthType, login konta
+    i sekret mogą pochodzić z parametrów albo z sekcji defaults w konfiguracji.
+    Parametry przekazane w CLI mają pierwszeństwo przed wartościami z JSON.
 
     Dla każdego Safe automatycznie wyliczana jest grupa właścicieli:
         <SafeName><ownerGroupSuffix>
@@ -21,26 +23,36 @@
 
 .PARAMETER PVWAURL
     Bazowy URL PVWA, np. https://pvwa.example.com/PasswordVault.
+    Jeśli nie zostanie podany, używana jest wartość defaults.pvwaUrl z JSON.
 
 .PARAMETER SafeName
     Nazwa tworzonego Safe, np. APP-PRD-SQL01.
 
 .PARAMETER AccountUserName
     Login konta dodawanego do Safe, np. svc_sql.
+    Jeśli nie zostanie podany, używana jest wartość defaults.accountUserName.
 
 .PARAMETER ConfigPath
-    Ścieżka do pliku JSON. Plik definiuje stałe właściwości Safe, typ konta,
-    role, stałych członków oraz sposób tworzenia grupy Owner.
+    Ścieżka do pliku JSON. Domyślnie:
+        $PSScriptRoot\CyberArk-SafeConfig.json
+
+    Plik definiuje wartości domyślne, właściwości Safe, typ konta, role,
+    stałych członków oraz sposób tworzenia grupy Owner.
 
 .PARAMETER AuthType
     Metoda logowania: CyberArk, LDAP albo Radius.
+    Jeśli nie zostanie podana, używana jest wartość defaults.authType z JSON,
+    a jeśli jej brak — CyberArk.
 
 .PARAMETER Credential
     Opcjonalny PSCredential do logowania do PVWA.
 
 .PARAMETER AccountSecret
-    Początkowy sekret konta. Jeśli nie zostanie przekazany, skrypt poprosi
-    o niego jako SecureString.
+    Początkowy sekret konta. Kolejność rozwiązywania:
+      1. parametr -AccountSecret,
+      2. zmienna środowiskowa z defaults.accountSecretEnvironmentVariable,
+      3. defaults.accountSecret (jawny tekst; niezalecane),
+      4. interaktywny prompt SecureString.
 
 .PARAMETER ADServer
     Opcjonalna domena DNS albo konkretny kontroler domeny używany do walidacji
@@ -91,29 +103,24 @@
       - dodawania kont,
       - inicjowania operacji CPM (Reconcile).
 
-    Hasło konta nie jest przechowywane w pliku konfiguracyjnym.
+    Domyślny plik CyberArk-SafeConfig.json powinien pozostać poza repozytorium,
+    jeśli zawiera sekret. Repozytorium zawiera jedynie plik *.example.json.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "Medium")]
 param(
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
     [string]$PVWAURL,
 
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$SafeName,
 
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
     [string]$AccountUserName,
 
-    [Parameter(Mandatory)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-    [string]$ConfigPath,
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "CyberArk-SafeConfig.json"),
 
-    [ValidateSet("CyberArk", "LDAP", "Radius")]
-    [string]$AuthType = "CyberArk",
+    [string]$AuthType,
 
     [System.Management.Automation.PSCredential]$Credential,
 
@@ -130,7 +137,6 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$PVWAURL = $PVWAURL.TrimEnd("/")
 
 $permissionNames = @(
     "useAccounts",
@@ -337,6 +343,56 @@ function ConvertTo-PermissionObject {
 }
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$defaults = Get-ObjectProperty $config "defaults"
+
+if ([string]::IsNullOrWhiteSpace($PVWAURL)) {
+    $PVWAURL = [string](Get-ObjectProperty $defaults "pvwaUrl")
+}
+if ([string]::IsNullOrWhiteSpace($PVWAURL)) {
+    throw "PVWAURL nie został podany i brakuje defaults.pvwaUrl w pliku konfiguracyjnym."
+}
+$PVWAURL = $PVWAURL.TrimEnd("/")
+
+if ([string]::IsNullOrWhiteSpace($AuthType)) {
+    $AuthType = [string](Get-ObjectProperty $defaults "authType")
+}
+if ([string]::IsNullOrWhiteSpace($AuthType)) {
+    $AuthType = "CyberArk"
+}
+if ($AuthType -notin @("CyberArk", "LDAP", "Radius")) {
+    throw "Nieprawidłowy AuthType '$AuthType'. Dozwolone: CyberArk, LDAP, Radius."
+}
+
+if ([string]::IsNullOrWhiteSpace($AccountUserName)) {
+    $AccountUserName = [string](Get-ObjectProperty $defaults "accountUserName")
+}
+if ([string]::IsNullOrWhiteSpace($AccountUserName)) {
+    throw "Login konta nie został podany i brakuje defaults.accountUserName w pliku konfiguracyjnym."
+}
+
+if ([string]::IsNullOrWhiteSpace($ADServer)) {
+    $ADServer = [string](Get-ObjectProperty $defaults "adServer")
+}
+
+if ($null -eq $AccountSecret) {
+    $secretEnvironmentVariable = [string](Get-ObjectProperty $defaults "accountSecretEnvironmentVariable")
+
+    if (-not [string]::IsNullOrWhiteSpace($secretEnvironmentVariable)) {
+        $secretFromEnvironment = [Environment]::GetEnvironmentVariable($secretEnvironmentVariable)
+        if (-not [string]::IsNullOrWhiteSpace($secretFromEnvironment)) {
+            $AccountSecret = ConvertTo-SecureString -String $secretFromEnvironment -AsPlainText -Force
+        }
+    }
+
+    if ($null -eq $AccountSecret) {
+        $plainConfigSecret = [string](Get-ObjectProperty $defaults "accountSecret")
+        if (-not [string]::IsNullOrWhiteSpace($plainConfigSecret)) {
+            Write-Warning "Używany jest jawny defaults.accountSecret z pliku konfiguracyjnego. Zalecana jest zmienna środowiskowa."
+            $AccountSecret = ConvertTo-SecureString -String $plainConfigSecret -AsPlainText -Force
+        }
+    }
+}
 
 foreach ($requiredSection in @("safe", "owner", "roles", "account")) {
     if (-not (Test-ObjectProperty $config $requiredSection)) {
