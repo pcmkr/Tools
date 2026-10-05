@@ -42,6 +42,11 @@
     Początkowy sekret konta. Jeśli nie zostanie przekazany, skrypt poprosi
     o niego jako SecureString.
 
+.PARAMETER ADServer
+    Opcjonalna domena DNS albo konkretny kontroler domeny używany do walidacji
+    grupy Owner w Active Directory. Jeśli parametr nie zostanie podany,
+    używany jest domyślny kontekst domenowy bieżącej stacji.
+
 .PARAMETER AllowExistingSafe
     Pozwala użyć istniejącego Safe.
 
@@ -57,7 +62,8 @@
         -AuthType LDAP `
         -SafeName "APP-PRD-SQL01" `
         -AccountUserName "svc_sql" `
-        -ConfigPath .\CyberArk-SafeConfig.example.json
+        -ConfigPath .\CyberArk-SafeConfig.example.json `
+        -ADServer "corp.example.com"
 
 .EXAMPLE
     $secret = Read-Host "Początkowe hasło konta" -AsSecureString
@@ -112,6 +118,8 @@ param(
     [System.Management.Automation.PSCredential]$Credential,
 
     [System.Security.SecureString]$AccountSecret,
+
+    [string]$ADServer,
 
     [switch]$AllowExistingSafe,
 
@@ -368,6 +376,39 @@ if ([string]::IsNullOrWhiteSpace($ownerSearchIn)) {
 }
 
 $ownerGroupName = $SafeName + $ownerGroupSuffix
+
+# Walidacja grupy Owner odbywa się przed logowaniem do CyberArk i przed
+# wykonaniem jakichkolwiek zmian po stronie Vault/PVWA.
+try {
+    Import-Module ActiveDirectory -ErrorAction Stop
+}
+catch {
+    throw "Nie można załadować modułu ActiveDirectory. Zainstaluj RSAT Active Directory PowerShell. Szczegóły: $($_.Exception.Message)"
+}
+
+$adParameters = @{
+    ErrorAction = "Stop"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ADServer)) {
+    $adParameters.Server = $ADServer
+}
+
+try {
+    $escapedOwnerGroupName = $ownerGroupName.Replace("'", "''")
+    $ownerADGroup = Get-ADGroup -Filter "SamAccountName -eq '$escapedOwnerGroupName' -or Name -eq '$escapedOwnerGroupName'" @adParameters |
+        Select-Object -First 1
+}
+catch {
+    throw "Nie udało się zweryfikować grupy Owner '$ownerGroupName' w Active Directory. Szczegóły: $($_.Exception.Message)"
+}
+
+if ($null -eq $ownerADGroup) {
+    $serverText = if ($ADServer) { " na '$ADServer'" } else { "" }
+    throw "Grupa Owner '$ownerGroupName' nie istnieje w Active Directory$serverText. Skrypt przerwany przed wykonaniem zmian w CyberArk."
+}
+
+Write-Host ("Zweryfikowano grupę AD Owner: {0} ({1})" -f $ownerADGroup.Name, $ownerADGroup.DistinguishedName) -ForegroundColor Green
 
 $members = [System.Collections.Generic.List[object]]::new()
 $members.Add([PSCustomObject]@{
