@@ -1,187 +1,529 @@
 #requires -Version 5.1
 #requires -Modules ActiveDirectory
+
 <#
 .SYNOPSIS
-    Eksportuje stan wskazanych kont AD na podstawie listy sAMAccountName.
+    Eksportuje informacje o stanie wskazanych kont użytkowników Active Directory.
 
 .DESCRIPTION
-    Odczytuje listę sAMAccountName z pliku tekstowego i eksportuje stan kont.
-    Dla dokładnego LastLogon oraz LastBadPassword odpytuje wszystkie kontrolery domeny,
-    ponieważ atrybuty lastLogon i badPasswordTime nie są replikowane.
+    Lista użytkowników jest definiowana bezpośrednio w tablicy $Zmienna.
 
-    DisabledDateApprox pochodzi z metadanych replikacji userAccountControl i jest tylko
-    przybliżeniem. Dokładną datę wyłączenia należy ustalać z Security Event ID 4725.
+    Skrypt pobiera:
+      - ostatnie udane logowanie,
+      - ostatnią nieudaną próbę uwierzytelnienia hasłem,
+      - stan Enabled / Disabled,
+      - datę ostatniego Enable / Disable (opcjonalnie z Security Event Log),
+      - stan blokady i czas blokady,
+      - wygaśnięcie konta,
+      - stan wygaśnięcia hasła i datę wygaśnięcia hasła.
 
-.PARAMETER InputFile
-    Plik tekstowy z jednym sAMAccountName w linii. Puste linie i linie zaczynające się od # są pomijane.
-
-.PARAMETER Domain
-    Domena DNS, np. corp.example.com.
-
-.PARAMETER OutputPath
-    Ścieżka wynikowego CSV. Domyślnie AD-User-State-<timestamp>.csv.
-
-.PARAMETER Delimiter
-    Separator CSV. Domyślnie średnik.
-
-.PARAMETER Encoding
-    Kodowanie CSV. Domyślnie utf8BOM.
-
-.EXAMPLE
-    .\Export-ADUserState.ps1 -InputFile .\users.txt -Domain corp.example.com
-    Eksportuje stan użytkowników z users.txt.
+    WAŻNE:
+      * lastLogon oraz badPasswordTime nie są replikowane pomiędzy DC,
+        dlatego skrypt odpytuje wszystkie kontrolery domeny i wybiera
+        najnowszą wartość.
+      * badPasswordTime oznacza ostatnią błędną próbę podania hasła.
+        Nie jest to pełny odpowiednik każdego możliwego zdarzenia 4625.
+      * AD nie przechowuje wiarygodnego atrybutu "EnabledSince" / "DisabledSince".
+        Dokładna data zmiany stanu konta wymaga zdarzeń Security:
+          4722 - konto zostało włączone,
+          4725 - konto zostało wyłączone.
 
 .EXAMPLE
-    .\Export-ADUserState.ps1 -InputFile C:\Temp\users.txt -Domain corp.example.com -OutputPath C:\Temp\AD-User-State.csv
-    Eksportuje raport do wskazanego pliku.
+    $Zmienna = @(
+        "user1",
+        "user2",
+        "user3"
+    )
+
+    .\Export-ADUserState.ps1
+
+.EXAMPLE
+    Aby pobrać datę ostatniego włączenia/wyłączenia konta z logów Security:
+        $QueryAccountStateEvents = $true
 
 .NOTES
-    Wymaga modułu ActiveDirectory i łączności ze wszystkimi DC domeny dla możliwie dokładnych
-    wartości LastLogon i LastBadPassword.
+    Wymagania:
+      - PowerShell 5.1+
+      - moduł ActiveDirectory / RSAT
+      - łączność ze wszystkimi DC
+      - dla odczytu 4722/4725: uprawnienia do Security Event Log na DC
 #>
-
-[CmdletBinding()]
-param(
-  [Parameter(Mandatory)][ValidateScript({Test-Path $_ -PathType Leaf})][string]$InputFile,
-  [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Domain,
-  [string]$OutputPath = (Join-Path $PWD ("AD-User-State-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".csv")),
-  [char]$Delimiter = ";",
-  [ValidateSet("utf8","utf8BOM","unicode","ascii")][string]$Encoding = "utf8BOM"
-)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
 Import-Module ActiveDirectory -ErrorAction Stop
 
-function Convert-FileTime {
-  param($Value)
-  if ($null -eq $Value) { return $null }
-  try {
-    $v = [Int64]$Value
-    if ($v -le 0 -or $v -eq [Int64]::MaxValue) { return $null }
-    return [DateTime]::FromFileTimeUtc($v).ToLocalTime()
-  } catch { return $null }
+
+# ============================================================
+# KONFIGURACJA
+# ============================================================
+
+# sAMAccountName użytkowników do sprawdzenia.
+$Zmienna = @(
+    "user1",
+    "user2",
+    "user3"
+)
+
+# Opcjonalnie ustaw konkretną domenę DNS, np.:
+# $Domain = "corp.example.com"
+# Pozostaw $null, aby użyć bieżącej domeny.
+$Domain = $null
+
+# $true = przeszukuj Security log na DC dla Event ID 4722/4725.
+# Może być wolne przy dużej liczbie użytkowników i dużych logach.
+$QueryAccountStateEvents = $false
+
+# Jak daleko wstecz szukać 4722/4725.
+$EventLogDaysBack = 365
+
+# Plik wynikowy.
+$OutputPath = Join-Path $PWD (
+    "AD-User-State-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".csv"
+)
+
+# CSV czytelny po imporcie do polskiego Excela.
+$Delimiter = ";"
+
+# PowerShell 5.1 nie obsługuje nazwy utf8BOM w Export-Csv,
+# dlatego dla maksymalnej zgodności używamy Unicode.
+$Encoding = "Unicode"
+
+
+# ============================================================
+# FUNKCJE
+# ============================================================
+
+function Convert-ADFileTime {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline = $true)]
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        $FileTime = [Int64]$Value
+
+        if (
+            $FileTime -le 0 -or
+            $FileTime -eq [Int64]::MaxValue
+        ) {
+            return $null
+        }
+
+        return [DateTime]::FromFileTimeUtc($FileTime).ToLocalTime()
+    }
+    catch {
+        return $null
+    }
 }
+
 
 function Get-MaxNonReplicatedTime {
-  param(
-    [Parameter(Mandatory)][string]$DistinguishedName,
-    [Parameter(Mandatory)][string]$AttributeName,
-    [Parameter(Mandatory)][object[]]$DomainControllers
-  )
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$DistinguishedName,
 
-  $max = [Int64]0
-  $sourceDC = $null
-  foreach ($dc in $DomainControllers) {
+        [Parameter(Mandatory)]
+        [ValidateSet("lastLogon", "badPasswordTime")]
+        [string]$AttributeName,
+
+        [Parameter(Mandatory)]
+        [object[]]$DomainControllers
+    )
+
+    [Int64]$MaxValue = 0
+    $SourceDC = $null
+
+    foreach ($DC in $DomainControllers) {
+        try {
+            $UserOnDC = Get-ADUser `
+                -Identity $DistinguishedName `
+                -Server $DC.HostName `
+                -Properties $AttributeName `
+                -ErrorAction Stop
+
+            $RawValue = $UserOnDC.$AttributeName
+
+            if ($null -ne $RawValue) {
+                [Int64]$CurrentValue = $RawValue
+
+                if ($CurrentValue -gt $MaxValue) {
+                    $MaxValue = $CurrentValue
+                    $SourceDC = $DC.HostName
+                }
+            }
+        }
+        catch {
+            Write-Warning (
+                "Nie udało się pobrać {0} dla {1} z DC {2}: {3}" -f
+                $AttributeName,
+                $DistinguishedName,
+                $DC.HostName,
+                $_.Exception.Message
+            )
+        }
+    }
+
+    [PSCustomObject]@{
+        Date     = if ($MaxValue -gt 0) {
+            Convert-ADFileTime $MaxValue
+        }
+        else {
+            $null
+        }
+        SourceDC = $SourceDC
+    }
+}
+
+
+function Get-LastAccountStateEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SamAccountName,
+
+        [Parameter(Mandatory)]
+        [object[]]$DomainControllers,
+
+        [Parameter(Mandatory)]
+        [int]$DaysBack
+    )
+
+    $StartTime = (Get-Date).AddDays(-$DaysBack)
+    $MatchingEvents = @()
+
+    foreach ($DC in $DomainControllers) {
+        try {
+            $Filter = @{
+                LogName   = "Security"
+                Id        = 4722, 4725
+                StartTime = $StartTime
+            }
+
+            $Events = Get-WinEvent `
+                -ComputerName $DC.HostName `
+                -FilterHashtable $Filter `
+                -ErrorAction Stop
+
+            foreach ($Event in $Events) {
+                try {
+                    [xml]$Xml = $Event.ToXml()
+                    $EventData = @{}
+
+                    foreach ($Data in $Xml.Event.EventData.Data) {
+                        $EventData[$Data.Name] = [string]$Data.'#text'
+                    }
+
+                    if ($EventData["TargetUserName"] -ieq $SamAccountName) {
+                        $MatchingEvents += [PSCustomObject]@{
+                            TimeCreated      = $Event.TimeCreated
+                            EventId          = $Event.Id
+                            State            = switch ($Event.Id) {
+                                4722 { "Enabled" }
+                                4725 { "Disabled" }
+                            }
+                            DomainController = $DC.HostName
+                            ChangedBy        = $EventData["SubjectUserName"]
+                        }
+                    }
+                }
+                catch {
+                    # Pomijamy pojedyncze zdarzenia, których XML nie da się sparsować.
+                }
+            }
+        }
+        catch {
+            Write-Warning (
+                "Nie udało się odczytać Security log z DC {0}: {1}" -f
+                $DC.HostName,
+                $_.Exception.Message
+            )
+        }
+    }
+
+    return (
+        $MatchingEvents |
+            Sort-Object TimeCreated -Descending |
+            Select-Object -First 1
+    )
+}
+
+
+# ============================================================
+# WALIDACJA
+# ============================================================
+
+$Users = @(
+    $Zmienna |
+        ForEach-Object {
+            if ($null -ne $_) {
+                ([string]$_).Trim()
+            }
+        } |
+        Where-Object { $_ } |
+        Sort-Object -Unique
+)
+
+if ($Users.Count -eq 0) {
+    throw 'Tablica $Zmienna jest pusta. Dodaj co najmniej jeden sAMAccountName.'
+}
+
+
+# ============================================================
+# DOMENA I KONTROLERY DOMENY
+# ============================================================
+
+if ([string]::IsNullOrWhiteSpace($Domain)) {
+    $DomainInfo = Get-ADDomain -ErrorAction Stop
+    $Domain = $DomainInfo.DNSRoot
+}
+else {
+    $DomainInfo = Get-ADDomain -Identity $Domain -Server $Domain -ErrorAction Stop
+}
+
+$DomainControllers = @(
+    Get-ADDomainController -Filter * -Server $Domain -ErrorAction Stop |
+        Sort-Object HostName
+)
+
+if ($DomainControllers.Count -eq 0) {
+    throw "Nie znaleziono kontrolerów domeny dla: $Domain"
+}
+
+Write-Host "Domena: $Domain"
+Write-Host "Kontrolery domeny: $($DomainControllers.Count)"
+
+
+# ============================================================
+# GŁÓWNA PĘTLA
+# ============================================================
+
+$Now = Get-Date
+
+$Results = foreach ($SamAccountName in $Users) {
+
+    Write-Host "Przetwarzanie: $SamAccountName"
+
     try {
-      $u = Get-ADUser -Identity $DistinguishedName -Server $dc.HostName -Properties $AttributeName -ErrorAction Stop
-      $raw = $u.$AttributeName
-      if ($null -ne $raw) {
-        $v = [Int64]$raw
-        if ($v -gt $max) { $max = $v; $sourceDC = $dc.HostName }
-      }
-    } catch {
-      Write-Warning ("Nie udało się odczytać {0} dla {1} z DC {2}: {3}" -f $AttributeName,$DistinguishedName,$dc.HostName,$_.Exception.Message)
-    }
-  }
+        $EscapedSam = $SamAccountName.Replace("'", "''")
 
-  [PSCustomObject]@{
-    RawValue = $max
-    Date = if ($max -gt 0) { Convert-FileTime $max } else { $null }
-    SourceDC = $sourceDC
-  }
+        $User = Get-ADUser `
+            -Filter "SamAccountName -eq '$EscapedSam'" `
+            -Server $Domain `
+            -Properties @(
+                "DisplayName",
+                "UserPrincipalName",
+                "Enabled",
+                "LockedOut",
+                "lockoutTime",
+                "PasswordExpired",
+                "PasswordNeverExpires",
+                "PasswordLastSet",
+                "msDS-UserPasswordExpiryTimeComputed",
+                "AccountExpirationDate",
+                "DistinguishedName"
+            ) `
+            -ErrorAction Stop |
+            Select-Object -First 1
+
+        if ($null -eq $User) {
+            [PSCustomObject]@{
+                SamAccountName             = $SamAccountName
+                Found                      = $false
+                DisplayName                = $null
+                UserPrincipalName          = $null
+                Enabled                    = $null
+                Disabled                   = $null
+                AccountStateChanged        = $null
+                AccountStateEventId        = $null
+                AccountStateChangedBy      = $null
+                AccountStateSourceDC       = $null
+                LastSuccessfulLogon        = $null
+                LastSuccessfulLogonDC      = $null
+                LastFailedPasswordAttempt  = $null
+                LastFailedPasswordDC       = $null
+                LockedOut                  = $null
+                LockedSince                = $null
+                AccountExpirationDate      = $null
+                AccountExpired             = $null
+                PasswordLastSet            = $null
+                PasswordNeverExpires       = $null
+                PasswordExpired            = $null
+                PasswordExpirationDate     = $null
+                DistinguishedName          = $null
+                Error                      = "User not found"
+            }
+
+            continue
+        }
+
+        $LastLogon = Get-MaxNonReplicatedTime `
+            -DistinguishedName $User.DistinguishedName `
+            -AttributeName "lastLogon" `
+            -DomainControllers $DomainControllers
+
+        $LastBadPassword = Get-MaxNonReplicatedTime `
+            -DistinguishedName $User.DistinguishedName `
+            -AttributeName "badPasswordTime" `
+            -DomainControllers $DomainControllers
+
+        $LockoutTime = Convert-ADFileTime $User.lockoutTime
+
+        $PasswordExpirationDate = $null
+
+        if (-not $User.PasswordNeverExpires) {
+            $PasswordExpirationDate = Convert-ADFileTime (
+                $User."msDS-UserPasswordExpiryTimeComputed"
+            )
+        }
+
+        $AccountExpired = $false
+
+        if ($null -ne $User.AccountExpirationDate) {
+            $AccountExpired = ($User.AccountExpirationDate -lt $Now)
+        }
+
+        $StateEvent = $null
+
+        if ($QueryAccountStateEvents) {
+            $StateEvent = Get-LastAccountStateEvent `
+                -SamAccountName $User.SamAccountName `
+                -DomainControllers $DomainControllers `
+                -DaysBack $EventLogDaysBack
+        }
+
+        [PSCustomObject]@{
+            SamAccountName             = $User.SamAccountName
+            Found                      = $true
+            DisplayName                = $User.DisplayName
+            UserPrincipalName          = $User.UserPrincipalName
+
+            Enabled                    = [bool]$User.Enabled
+            Disabled                   = -not [bool]$User.Enabled
+
+            AccountStateChanged        = if ($StateEvent) {
+                $StateEvent.TimeCreated
+            }
+            else {
+                $null
+            }
+
+            AccountStateEventId        = if ($StateEvent) {
+                $StateEvent.EventId
+            }
+            else {
+                $null
+            }
+
+            AccountStateChangedBy      = if ($StateEvent) {
+                $StateEvent.ChangedBy
+            }
+            else {
+                $null
+            }
+
+            AccountStateSourceDC       = if ($StateEvent) {
+                $StateEvent.DomainController
+            }
+            else {
+                $null
+            }
+
+            LastSuccessfulLogon        = $LastLogon.Date
+            LastSuccessfulLogonDC      = $LastLogon.SourceDC
+
+            LastFailedPasswordAttempt  = $LastBadPassword.Date
+            LastFailedPasswordDC       = $LastBadPassword.SourceDC
+
+            LockedOut                  = [bool]$User.LockedOut
+
+            LockedSince                = if ($User.LockedOut) {
+                $LockoutTime
+            }
+            else {
+                $null
+            }
+
+            AccountExpirationDate      = $User.AccountExpirationDate
+            AccountExpired             = $AccountExpired
+
+            PasswordLastSet            = $User.PasswordLastSet
+            PasswordNeverExpires       = [bool]$User.PasswordNeverExpires
+            PasswordExpired            = [bool]$User.PasswordExpired
+            PasswordExpirationDate     = $PasswordExpirationDate
+
+            DistinguishedName          = $User.DistinguishedName
+            Error                      = $null
+        }
+    }
+    catch {
+        [PSCustomObject]@{
+            SamAccountName             = $SamAccountName
+            Found                      = $false
+            DisplayName                = $null
+            UserPrincipalName          = $null
+            Enabled                    = $null
+            Disabled                   = $null
+            AccountStateChanged        = $null
+            AccountStateEventId        = $null
+            AccountStateChangedBy      = $null
+            AccountStateSourceDC       = $null
+            LastSuccessfulLogon        = $null
+            LastSuccessfulLogonDC      = $null
+            LastFailedPasswordAttempt  = $null
+            LastFailedPasswordDC       = $null
+            LockedOut                  = $null
+            LockedSince                = $null
+            AccountExpirationDate      = $null
+            AccountExpired             = $null
+            PasswordLastSet            = $null
+            PasswordNeverExpires       = $null
+            PasswordExpired            = $null
+            PasswordExpirationDate     = $null
+            DistinguishedName          = $null
+            Error                      = $_.Exception.Message
+        }
+    }
 }
 
-function Get-UacChangeApproximation {
-  param([string]$DistinguishedName,[string]$Server)
-  try {
-    $m = Get-ADReplicationAttributeMetadata -Object $DistinguishedName -Server $Server -Properties userAccountControl -ErrorAction Stop |
-      Where-Object AttributeName -eq "userAccountControl" | Select-Object -First 1
-    if ($m) { return $m.LastOriginatingChangeTime }
-  } catch {
-    Write-Warning ("Nie udało się pobrać metadanych userAccountControl dla {0}: {1}" -f $DistinguishedName,$_.Exception.Message)
-  }
-  return $null
+
+# ============================================================
+# EKSPORT
+# ============================================================
+
+$OutputDirectory = Split-Path -Parent $OutputPath
+
+if (
+    $OutputDirectory -and
+    -not (Test-Path -LiteralPath $OutputDirectory)
+) {
+    New-Item `
+        -ItemType Directory `
+        -Path $OutputDirectory `
+        -Force |
+        Out-Null
 }
 
-$domainInfo = Get-ADDomain -Identity $Domain -Server $Domain
-$dcs = @(Get-ADDomainController -Filter * -Server $Domain | Sort-Object HostName)
-if ($dcs.Count -eq 0) { throw "Nie znaleziono kontrolerów domeny dla $Domain" }
-$referenceDC = $dcs[0].HostName
+$Results |
+    Export-Csv `
+        -LiteralPath $OutputPath `
+        -NoTypeInformation `
+        -Delimiter $Delimiter `
+        -Encoding $Encoding
 
-$samAccounts = @(Get-Content -LiteralPath $InputFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("#") } | Sort-Object -Unique)
-if ($samAccounts.Count -eq 0) { throw "Lista wejściowa jest pusta." }
+Write-Host ""
+Write-Host (
+    "Wyeksportowano {0} rekordów do: {1}" -f
+    $Results.Count,
+    $OutputPath
+) -ForegroundColor Green
 
-$rows = foreach ($sam in $samAccounts) {
-  try {
-    $escaped = $sam.Replace("'","''")
-    $user = Get-ADUser -Filter "SamAccountName -eq '$escaped'" -Server $Domain -Properties @(
-      "Enabled","LockedOut","lockoutTime","PasswordExpired","PasswordNeverExpires","PasswordLastSet",
-      "msDS-UserPasswordExpiryTimeComputed","AccountExpirationDate","whenChanged","DistinguishedName",
-      "UserPrincipalName","DisplayName","userAccountControl"
-    ) | Select-Object -First 1
-
-    if ($null -eq $user) {
-      [PSCustomObject]@{
-        SamAccountName=$sam; Found=$false; Domain=$Domain; DisplayName=$null; UserPrincipalName=$null;
-        Enabled=$null; DisabledDateApprox=$null; DisabledDateSource="NotFound";
-        LastLogon=$null; LastLogonSourceDC=$null; LastBadPassword=$null; LastBadPasswordSourceDC=$null;
-        PasswordLastSet=$null; PasswordNeverExpires=$null; PasswordExpired=$null; PasswordExpiryDate=$null;
-        LockedOut=$null; LockoutTime=$null; AccountExpirationDate=$null; DistinguishedName=$null; Error="User not found"
-      }
-      continue
-    }
-
-    $lastLogon = Get-MaxNonReplicatedTime -DistinguishedName $user.DistinguishedName -AttributeName "lastLogon" -DomainControllers $dcs
-    $lastBad   = Get-MaxNonReplicatedTime -DistinguishedName $user.DistinguishedName -AttributeName "badPasswordTime" -DomainControllers $dcs
-
-    $expiry = $null
-    if (-not $user.PasswordNeverExpires) {
-      $expiry = Convert-FileTime $user."msDS-UserPasswordExpiryTimeComputed"
-    }
-
-    $disabledApprox = $null
-    $disabledSource = $null
-    if (-not $user.Enabled) {
-      $disabledApprox = Get-UacChangeApproximation -DistinguishedName $user.DistinguishedName -Server $referenceDC
-      $disabledSource = "userAccountControl replication metadata; approximate only"
-    }
-
-    [PSCustomObject]@{
-      SamAccountName=$user.SamAccountName
-      Found=$true
-      Domain=$Domain
-      DisplayName=$user.DisplayName
-      UserPrincipalName=$user.UserPrincipalName
-      Enabled=$user.Enabled
-      DisabledDateApprox=$disabledApprox
-      DisabledDateSource=$disabledSource
-      LastLogon=$lastLogon.Date
-      LastLogonSourceDC=$lastLogon.SourceDC
-      LastBadPassword=$lastBad.Date
-      LastBadPasswordSourceDC=$lastBad.SourceDC
-      PasswordLastSet=$user.PasswordLastSet
-      PasswordNeverExpires=$user.PasswordNeverExpires
-      PasswordExpired=$user.PasswordExpired
-      PasswordExpiryDate=$expiry
-      LockedOut=$user.LockedOut
-      LockoutTime=(Convert-FileTime $user.lockoutTime)
-      AccountExpirationDate=$user.AccountExpirationDate
-      DistinguishedName=$user.DistinguishedName
-      Error=$null
-    }
-  } catch {
-    [PSCustomObject]@{
-      SamAccountName=$sam; Found=$false; Domain=$Domain; DisplayName=$null; UserPrincipalName=$null;
-      Enabled=$null; DisabledDateApprox=$null; DisabledDateSource=$null;
-      LastLogon=$null; LastLogonSourceDC=$null; LastBadPassword=$null; LastBadPasswordSourceDC=$null;
-      PasswordLastSet=$null; PasswordNeverExpires=$null; PasswordExpired=$null; PasswordExpiryDate=$null;
-      LockedOut=$null; LockoutTime=$null; AccountExpirationDate=$null; DistinguishedName=$null; Error=$_.Exception.Message
-    }
-  }
-}
-
-$outDir = Split-Path -Parent $OutputPath
-if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
-$rows | Export-Csv -LiteralPath $OutputPath -NoTypeInformation -Delimiter $Delimiter -Encoding $Encoding
-Write-Host ("Wyeksportowano {0} rekordów do {1}" -f $rows.Count,$OutputPath) -ForegroundColor Green
+$Results
