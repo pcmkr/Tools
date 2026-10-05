@@ -292,36 +292,67 @@ Pełność danych zależy od uprawnień konta raportującego w CyberArk, zwłasz
 
 ## New-CyberArkSafeAccount.ps1
 
-Automatyzuje przygotowanie nowego Safe i konta:
+Automatyzuje utworzenie Safe i onboarding jednego, stałego typu konta:
 
 1. loguje się do PVWA,
-2. tworzy Safe,
-3. dodaje użytkowników lub grupy z uprawnieniami wynikającymi z ról w JSON,
-4. dodaje wskazane konto do Safe,
-5. zleca `Reconcile` przez CPM,
-6. wylogowuje sesję PVWA.
+2. tworzy Safe o nazwie podanej w parametrze `-SafeName`,
+3. automatycznie dodaje grupę AD owner o nazwie `<SafeName>_owner`,
+4. przypisuje jej uprawnienia roli `Owner` z JSON,
+5. dodaje opcjonalnych stałych członków Safe z sekcji `members`,
+6. dodaje konto o loginie podanym w `-AccountUserName`,
+7. zleca `Reconcile` przez CPM,
+8. wylogowuje sesję PVWA.
 
-Przykładowy plik `CyberArk-SafeConfig.example.json` zawiera role:
-
-- `SafeAdmin` — administracja Safe i kontami,
-- `Operator` — używanie kont i operacje CPM,
-- `Auditor` — listowanie kont, audyt i podgląd członków,
-- `ApproverLevel1` — używanie kont i autoryzacja żądań poziomu 1.
-
-Każdy element `members` wskazuje nazwę członka, katalog w `searchIn` oraz nazwę roli. Uprawnienia niewymienione w definicji roli są ustawiane na `false`.
-
-### Uruchomienie
+Nazwa Safe i login konta **nie są zapisane w JSON**. Są przekazywane przy uruchomieniu:
 
 ```powershell
 .\New-CyberArkSafeAccount.ps1 `
     -PVWAURL "https://pvwa.example.com/PasswordVault" `
     -AuthType LDAP `
+    -SafeName "APP-PRD-SQL01" `
+    -AccountUserName "svc_sql" `
     -ConfigPath .\CyberArk-SafeConfig.example.json
 ```
 
-Skrypt nie przechowuje początkowego hasła konta w JSON. Jeśli `-AccountSecret` nie zostanie podany, poprosi o sekret jako `SecureString`.
+Dla powyższego przykładu skrypt utworzy grupę właścicieli:
 
-Można też przekazać sekret wcześniej:
+```text
+APP-PRD-SQL01_owner
+```
+
+Sposób budowania tej nazwy jest kontrolowany przez sekcję:
+
+```json
+"owner": {
+  "role": "Owner",
+  "groupSuffix": "_owner",
+  "searchIn": "CORP"
+}
+```
+
+`searchIn` wskazuje katalog, w którym CyberArk ma wyszukać grupę. Rola `Owner` musi istnieć w sekcji `roles`.
+
+Sekcja `account` opisuje wyłącznie stały typ konta, np.:
+
+```json
+"account": {
+  "address": "corp.example.com",
+  "platformId": "WinDomain",
+  "secretType": "password",
+  "platformAccountProperties": {
+    "LogonDomain": "CORP"
+  },
+  "secretManagement": {
+    "automaticManagementEnabled": true
+  }
+}
+```
+
+Pole CyberArk `name` (Object Name) **nie jest wysyłane** przez skrypt. CyberArk tworzy nazwę obiektu konta zgodnie ze swoim mechanizmem. Parametr `-AccountUserName` ustawia pole `userName`.
+
+Hasło konta również nie jest przechowywane w JSON. Jeśli `-AccountSecret` nie zostanie przekazany, skrypt zapyta o nie jako `SecureString`.
+
+Można przekazać sekret wcześniej:
 
 ```powershell
 $secret = Read-Host "Początkowe hasło konta" -AsSecureString
@@ -329,6 +360,8 @@ $secret = Read-Host "Początkowe hasło konta" -AsSecureString
 .\New-CyberArkSafeAccount.ps1 `
     -PVWAURL "https://pvwa.example.com/PasswordVault" `
     -AuthType CyberArk `
+    -SafeName "APP-PRD-SQL01" `
+    -AccountUserName "svc_sql" `
     -ConfigPath .\CyberArk-SafeConfig.example.json `
     -AccountSecret $secret
 ```
@@ -338,6 +371,8 @@ $secret = Read-Host "Początkowe hasło konta" -AsSecureString
 ```powershell
 .\New-CyberArkSafeAccount.ps1 `
     -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -SafeName "APP-PRD-SQL01" `
+    -AccountUserName "svc_sql" `
     -ConfigPath .\CyberArk-SafeConfig.example.json `
     -WhatIf
 ```
@@ -346,11 +381,13 @@ Dodatkowe przełączniki:
 
 - `-AllowExistingSafe` — pozwala kontynuować, jeśli Safe już istnieje,
 - `-UpdateExistingMembers` — aktualizuje uprawnienia istniejących członków,
-- `-SkipReconcile` — pomija Reconcile, np. podczas testów.
+- `-SkipReconcile` — pomija Reconcile.
 
-Konto wykonujące skrypt musi mieć uprawnienia pozwalające tworzyć Safe, zarządzać członkami Safe, dodawać konta oraz inicjować operacje CPM.
+W konfiguracji przykładowej niewymienione uprawnienia danej roli są ustawiane na `false`.
 
-`POST /api/Accounts/{id}/Reconcile` zleca operację do CPM. Faktyczne powodzenie reconcile zależy m.in. od konfiguracji platformy oraz dostępności i konfiguracji właściwego reconcile account.
+Konto wykonujące skrypt musi mieć prawa pozwalające tworzyć Safe, zarządzać członkami Safe, dodawać konta i inicjować operacje CPM.
+
+`POST /api/Accounts/{id}/Reconcile` zleca operację do CPM. Jej faktyczne powodzenie zależy od konfiguracji platformy oraz Reconcile Account.
 
 # Splunk
 
