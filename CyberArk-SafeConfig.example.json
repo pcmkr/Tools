@@ -1,0 +1,85 @@
+{
+  "safe": {
+    "safeName": "APP-PRD-SQL01",
+    "description": "Konta uprzywilejowane dla APP-PRD-SQL01",
+    "location": "\\",
+    "managingCPM": "PasswordManager",
+    "numberOfVersionsRetention": 5,
+    "olacEnabled": false
+  },
+  "roles": {
+    "SafeAdmin": {
+      "useAccounts": true,
+      "retrieveAccounts": true,
+      "listAccounts": true,
+      "addAccounts": true,
+      "updateAccountContent": true,
+      "updateAccountProperties": true,
+      "initiateCPMAccountManagementOperations": true,
+      "specifyNextAccountContent": true,
+      "renameAccounts": true,
+      "deleteAccounts": true,
+      "unlockAccounts": true,
+      "manageSafe": true,
+      "manageSafeMembers": true,
+      "viewAuditLog": true,
+      "viewSafeMembers": true,
+      "moveAccountsAndFolders": true
+    },
+    "Operator": {
+      "useAccounts": true,
+      "retrieveAccounts": true,
+      "listAccounts": true,
+      "updateAccountProperties": true,
+      "initiateCPMAccountManagementOperations": true,
+      "viewSafeMembers": true
+    },
+    "Auditor": {
+      "listAccounts": true,
+      "viewAuditLog": true,
+      "viewSafeMembers": true
+    },
+    "ApproverLevel1": {
+      "useAccounts": true,
+      "retrieveAccounts": true,
+      "listAccounts": true,
+      "viewSafeMembers": true,
+      "requestsAuthorizationLevel1": true
+    }
+  },
+  "members": [
+    {
+      "name": "PAM-Safe-Admins",
+      "searchIn": "CORP",
+      "role": "SafeAdmin"
+    },
+    {
+      "name": "PAM-Operators",
+      "searchIn": "CORP",
+      "role": "Operator"
+    },
+    {
+      "name": "PAM-Auditors",
+      "searchIn": "CORP",
+      "role": "Auditor"
+    },
+    {
+      "name": "PAM-Approvers-L1",
+      "searchIn": "CORP",
+      "role": "ApproverLevel1"
+    }
+  ],
+  "account": {
+    "name": "WinDomain-CORP-svc_sql",
+    "address": "corp.example.com",
+    "userName": "svc_sql",
+    "platformId": "WinDomain",
+    "secretType": "password",
+    "platformAccountProperties": {
+      "LogonDomain": "CORP"
+    },
+    "secretManagement": {
+      "automaticManagementEnabled": true
+    }
+  }
+}
