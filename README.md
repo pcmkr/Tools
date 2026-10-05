@@ -12,6 +12,8 @@ Prywatne repozytorium z narzędziami administracyjnymi i audytowymi dla Active D
 | `Find-InactiveADUsers.ps1` | Lista kont AD nieaktywnych od wskazanej liczby dni |
 | `Export-CyberArkUsers.ps1` | Eksport użytkowników CyberArk PAM oraz ich typu/roli i VaultAuthorization |
 | `Export-CyberArkAccess.ps1` | Pełny raport CyberArk: użytkownicy, Safe, konta i prawa dostępu |
+| `New-CyberArkSafeAccount.ps1` | Tworzenie Safe, nadawanie uprawnień wg ról, onboarding konta i Reconcile |
+| `CyberArk-SafeConfig.example.json` | Przykładowa konfiguracja Safe, ról, członków i konta |
 | `Splunk-ADUserState.spl.md` | SPL do odtworzenia historii logowań i zmian stanu kont z Windows Security logs |
 
 ---
@@ -285,7 +287,70 @@ Można wskazać konkretny kontroler domeny:
 
 Pełność danych zależy od uprawnień konta raportującego w CyberArk, zwłaszcza praw do listowania użytkowników, członków Safe i kont.
 
+
 ---
+
+## New-CyberArkSafeAccount.ps1
+
+Automatyzuje przygotowanie nowego Safe i konta:
+
+1. loguje się do PVWA,
+2. tworzy Safe,
+3. dodaje użytkowników lub grupy z uprawnieniami wynikającymi z ról w JSON,
+4. dodaje wskazane konto do Safe,
+5. zleca `Reconcile` przez CPM,
+6. wylogowuje sesję PVWA.
+
+Przykładowy plik `CyberArk-SafeConfig.example.json` zawiera role:
+
+- `SafeAdmin` — administracja Safe i kontami,
+- `Operator` — używanie kont i operacje CPM,
+- `Auditor` — listowanie kont, audyt i podgląd członków,
+- `ApproverLevel1` — używanie kont i autoryzacja żądań poziomu 1.
+
+Każdy element `members` wskazuje nazwę członka, katalog w `searchIn` oraz nazwę roli. Uprawnienia niewymienione w definicji roli są ustawiane na `false`.
+
+### Uruchomienie
+
+```powershell
+.\New-CyberArkSafeAccount.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -AuthType LDAP `
+    -ConfigPath .\CyberArk-SafeConfig.example.json
+```
+
+Skrypt nie przechowuje początkowego hasła konta w JSON. Jeśli `-AccountSecret` nie zostanie podany, poprosi o sekret jako `SecureString`.
+
+Można też przekazać sekret wcześniej:
+
+```powershell
+$secret = Read-Host "Początkowe hasło konta" -AsSecureString
+
+.\New-CyberArkSafeAccount.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -AuthType CyberArk `
+    -ConfigPath .\CyberArk-SafeConfig.example.json `
+    -AccountSecret $secret
+```
+
+### Bezpieczny test
+
+```powershell
+.\New-CyberArkSafeAccount.ps1 `
+    -PVWAURL "https://pvwa.example.com/PasswordVault" `
+    -ConfigPath .\CyberArk-SafeConfig.example.json `
+    -WhatIf
+```
+
+Dodatkowe przełączniki:
+
+- `-AllowExistingSafe` — pozwala kontynuować, jeśli Safe już istnieje,
+- `-UpdateExistingMembers` — aktualizuje uprawnienia istniejących członków,
+- `-SkipReconcile` — pomija Reconcile, np. podczas testów.
+
+Konto wykonujące skrypt musi mieć uprawnienia pozwalające tworzyć Safe, zarządzać członkami Safe, dodawać konta oraz inicjować operacje CPM.
+
+`POST /api/Accounts/{id}/Reconcile` zleca operację do CPM. Faktyczne powodzenie reconcile zależy m.in. od konfiguracji platformy oraz dostępności i konfiguracji właściwego reconcile account.
 
 # Splunk
 
