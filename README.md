@@ -304,16 +304,42 @@ Automatyzuje utworzenie Safe i onboarding jednego, stałego typu konta:
 8. zleca `Reconcile` przez CPM,
 9. wylogowuje sesję PVWA.
 
-Nazwa Safe i login konta **nie są zapisane w JSON**. Są przekazywane przy uruchomieniu:
+Nazwa Safe pozostaje parametrem obowiązkowym. Pozostałe wartości mogą mieć domyślne ustawienia w pliku konfiguracyjnym.
+
+Domyślna ścieżka konfiguracji to:
+
+```text
+$PSScriptRoot\CyberArk-SafeConfig.json
+```
+
+Sekcja `defaults` może wyglądać tak:
+
+```json
+"defaults": {
+  "pvwaUrl": "https://pvwa.example.com/PasswordVault",
+  "authType": "LDAP",
+  "accountUserName": "svc_sql",
+  "accountSecretEnvironmentVariable": "CYBERARK_ACCOUNT_SECRET",
+  "accountSecret": null,
+  "adServer": "corp.example.com"
+}
+```
+
+Kolejność pierwszeństwa jest następująca: parametr CLI → wartość z konfiguracji → wartość wbudowana w skrypt.
+
+Dzięki temu typowe uruchomienie może być skrócone do:
+
+```powershell
+.\New-CyberArkSafeAccount.ps1 -SafeName "APP-PRD-SQL01"
+```
+
+Jeśli chcesz nadpisać dowolną wartość jednorazowo:
 
 ```powershell
 .\New-CyberArkSafeAccount.ps1 `
-    -PVWAURL "https://pvwa.example.com/PasswordVault" `
-    -AuthType LDAP `
     -SafeName "APP-PRD-SQL01" `
-    -AccountUserName "svc_sql" `
-    -ConfigPath .\CyberArk-SafeConfig.example.json `
-    -ADServer "corp.example.com"
+    -AccountUserName "svc_sql2" `
+    -AuthType CyberArk
 ```
 
 Dla powyższego przykładu skrypt utworzy grupę właścicieli:
@@ -354,7 +380,7 @@ Sekcja `account` opisuje wyłącznie stały typ konta, np.:
 
 Pole CyberArk `name` (Object Name) **nie jest wysyłane** przez skrypt. CyberArk tworzy nazwę obiektu konta zgodnie ze swoim mechanizmem. Parametr `-AccountUserName` ustawia pole `userName`.
 
-Hasło konta również nie jest przechowywane w JSON. Jeśli `-AccountSecret` nie zostanie przekazany, skrypt zapyta o nie jako `SecureString`.
+Sekret konta może pochodzić z `-AccountSecret`, ze zmiennej środowiskowej wskazanej w `defaults.accountSecretEnvironmentVariable`, z `defaults.accountSecret` albo z interaktywnego promptu. Zalecane jest użycie zmiennej środowiskowej. Jawny `accountSecret` w JSON jest obsługiwany, ale niezalecany. Lokalny `CyberArk-SafeConfig.json` jest ignorowany przez Git.
 
 Można przekazać sekret wcześniej:
 
@@ -362,11 +388,7 @@ Można przekazać sekret wcześniej:
 $secret = Read-Host "Początkowe hasło konta" -AsSecureString
 
 .\New-CyberArkSafeAccount.ps1 `
-    -PVWAURL "https://pvwa.example.com/PasswordVault" `
-    -AuthType CyberArk `
     -SafeName "APP-PRD-SQL01" `
-    -AccountUserName "svc_sql" `
-    -ConfigPath .\CyberArk-SafeConfig.example.json `
     -AccountSecret $secret
 ```
 
@@ -374,14 +396,11 @@ $secret = Read-Host "Początkowe hasło konta" -AsSecureString
 
 ```powershell
 .\New-CyberArkSafeAccount.ps1 `
-    -PVWAURL "https://pvwa.example.com/PasswordVault" `
     -SafeName "APP-PRD-SQL01" `
-    -AccountUserName "svc_sql" `
-    -ConfigPath .\CyberArk-SafeConfig.example.json `
     -WhatIf
 ```
 
-`members` jest opcjonalną listą dodatkowych, stałych członków Safe. Nie jest używana do grupy Owner. Jeśli nie chcesz dodawać np. wspólnych grup operatorów lub audytorów do każdego Safe, sekcję `members` można usunąć z JSON.
+`members` jest opcjonalną listą dodatkowych, stałych członków Safe. W przykładzie znajduje się `Vault Admins` wyszukiwane w `Vault`. Nie jest używana do grupy Owner. Jeśli nie chcesz dodawać np. wspólnych grup operatorów lub audytorów do każdego Safe, sekcję `members` można usunąć z JSON.
 
 Dodatkowe przełączniki:
 
