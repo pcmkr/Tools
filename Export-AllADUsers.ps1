@@ -190,7 +190,7 @@ foreach ($dc in $dcs) {
         $successfulDcReads++
 
         foreach ($user in $dcUsers) {
-            $key = $user.ObjectGUID.Guid
+            $key = $user.ObjectGUID.ToString()
 
             if (-not $logonIndex.ContainsKey($key)) {
                 $logonIndex[$key] = [PSCustomObject]@{
@@ -315,7 +315,7 @@ foreach ($user in $users) {
 
     Write-Progress -Activity "Przygotowywanie eksportu użytkowników AD" -Status ("{0}/{1}: {2}" -f $counter,$users.Count,$user.SamAccountName) -PercentComplete (($counter / [math]::Max($users.Count,1))*100)
 
-    $guidKey = $user.ObjectGUID.Guid
+    $guidKey = $user.ObjectGUID.ToString()
     $timeEntry = $null
     if ($logonIndex.ContainsKey($guidKey)) {
         $timeEntry = $logonIndex[$guidKey]
