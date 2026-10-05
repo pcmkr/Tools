@@ -35,7 +35,7 @@
         "user3"
     )
 
-    .\Export-ADUserState.ps1
+    .\Export-ADUserState.ps1 -Domain corp.example.com
 
 .EXAMPLE
     Aby pobrać datę ostatniego włączenia/wyłączenia konta z logów Security:
@@ -48,6 +48,13 @@
       - łączność ze wszystkimi DC
       - dla odczytu 4722/4725: uprawnienia do Security Event Log na DC
 #>
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Domain
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -65,11 +72,6 @@ $Zmienna = @(
     "user2",
     "user3"
 )
-
-# Opcjonalnie ustaw konkretną domenę DNS, np.:
-# $Domain = "corp.example.com"
-# Pozostaw $null, aby użyć bieżącej domeny.
-$Domain = $null
 
 # $true = przeszukuj Security log na DC dla Event ID 4722/4725.
 # Może być wolne przy dużej liczbie użytkowników i dużych logach.
@@ -281,13 +283,7 @@ if ($Users.Count -eq 0) {
 # DOMENA I KONTROLERY DOMENY
 # ============================================================
 
-if ([string]::IsNullOrWhiteSpace($Domain)) {
-    $DomainInfo = Get-ADDomain -ErrorAction Stop
-    $Domain = $DomainInfo.DNSRoot
-}
-else {
-    $DomainInfo = Get-ADDomain -Identity $Domain -Server $Domain -ErrorAction Stop
-}
+$DomainInfo = Get-ADDomain -Identity $Domain -Server $Domain -ErrorAction Stop
 
 $DomainControllers = @(
     Get-ADDomainController -Filter * -Server $Domain -ErrorAction Stop |
