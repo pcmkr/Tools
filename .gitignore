@@ -1,0 +1,2 @@
+# Local CyberArk configuration may contain secrets.
+CyberArk-SafeConfig.json
