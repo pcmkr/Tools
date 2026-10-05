@@ -1,3 +1,5 @@
+#requires -Version 5.1
+#requires -Modules ActiveDirectory
 <#
 .SYNOPSIS
     Eksportuje grupy Active Directory i ich członków do CSV.
@@ -5,16 +7,26 @@
 .DESCRIPTION
     Tworzy Groups.csv, Memberships.csv i opcjonalnie Errors.csv.
     Obsługuje członkostwo bezpośrednie i zagnieżdżone, pełną ścieżkę członkostwa,
-    UPN, mail, stan Enabled, SID, DN/OU, scope/category grup i wykrywanie cykli.
+    UPN, mail, stan Enabled, DN/OU, scope/category grup i wykrywanie cykli.
+
+    Dla użytkowników dodaje:
+      - dokładny LastLogon (maksymalny lastLogon ze wszystkich dostępnych DC),
+      - dokładny LastBadPasswordAttempt (maksymalny badPasswordTime ze wszystkich dostępnych DC),
+      - extensionAttribute2,
+      - extensionAttribute13,
+      - employeeID,
+      - employeeType.
+
+    SID-y nie są eksportowane.
 
 .PARAMETER OutputDirectory
-    Katalog wynikowy. Domyślnie tworzony jest katalog AD-Group-Export-<timestamp>.
+    Katalog wynikowy. Domyślnie AD-Group-Export-<timestamp>.
 
 .PARAMETER SearchBase
     Opcjonalny Distinguished Name OU/kontenera ograniczający wyszukiwanie grup.
 
 .PARAMETER Domain
-    Domena DNS lub konkretny kontroler domeny używany przez polecenia Get-AD*.
+    Domena DNS lub konkretny kontroler domeny używany do odnalezienia domeny.
     Alias: -Server, -DomainController.
 
 .PARAMETER GroupFilter
@@ -27,25 +39,23 @@
     Dodaje do Memberships.csv także grupy bez członków.
 
 .PARAMETER Encoding
-    Kodowanie plików CSV. Domyślnie utf8BOM.
+    Kodowanie plików CSV. Domyślnie utf8BOM. W Windows PowerShell 5.1
+    wartość utf8BOM jest mapowana na UTF8, które zapisuje BOM.
 
 .PARAMETER Delimiter
-    Separator CSV. Domyślnie średnik.
+    Separator CSV. Domyślnie średnik, co jest wygodne dla polskiego Excela.
 
 .EXAMPLE
     .\Export-ADGroupMembership.ps1 -Domain corp.example.com -ExpandNested -IncludeEmptyGroups
-    Pełny eksport grup i członkostwa dla domeny.
 
 .EXAMPLE
     .\Export-ADGroupMembership.ps1 -Domain dc01.corp.example.com -SearchBase "OU=Groups,DC=corp,DC=example,DC=com"
-    Eksport grup z konkretnego OU przez wskazany kontroler domeny.
-
-.EXAMPLE
-    .\Export-ADGroupMembership.ps1 -Domain corp.example.com -GroupFilter 'Name -like "GRP-*"' -OutputDirectory C:\Temp\ADGroups
-    Eksport tylko grup pasujących do wzorca.
 
 .NOTES
-    Wymaga modułu ActiveDirectory (RSAT). Przy -ExpandNested liczba zapytań do AD może znacząco wzrosnąć.
+    Wymaga modułu ActiveDirectory (RSAT).
+    Dokładny LastLogon i LastBadPasswordAttempt wymagają odczytu wszystkich dostępnych DC.
+    badPasswordTime oznacza ostatnią próbę z błędnym hasłem; nie jest uniwersalnym znacznikiem
+    każdego możliwego nieudanego logowania.
 #>
 
 [CmdletBinding()]
@@ -67,9 +77,7 @@ $ErrorActionPreference = "Stop"
 Import-Module ActiveDirectory -ErrorAction Stop
 
 $adServerParams = @{}
-if ($Domain) {
-    $adServerParams.Server = $Domain
-}
+if ($Domain) { $adServerParams.Server = $Domain }
 
 function Get-ParentOU {
     param([Parameter(Mandatory)][string]$DistinguishedName)
@@ -77,10 +85,36 @@ function Get-ParentOU {
     return $null
 }
 
-function Convert-SidToString {
-    param($Sid)
-    if ($null -eq $Sid) { return $null }
-    try { return $Sid.Value } catch { return [string]$Sid }
+function Convert-FileTime {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    try {
+        $v = [Int64]$Value
+        if ($v -le 0 -or $v -eq [Int64]::MaxValue) { return $null }
+        return [DateTime]::FromFileTimeUtc($v).ToLocalTime()
+    }
+    catch { return $null }
+}
+
+function Get-CompatibleCsvEncoding {
+    param([Parameter(Mandatory)][string]$RequestedEncoding)
+    if ($PSVersionTable.PSVersion.Major -lt 6 -and $RequestedEncoding -eq "utf8BOM") {
+        return "UTF8"
+    }
+    return $RequestedEncoding
+}
+
+function Export-ReadableCsv {
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]$InputObject,
+        [Parameter(Mandatory)][string]$Path
+    )
+    begin { $buffer = [System.Collections.Generic.List[object]]::new() }
+    process { $buffer.Add($InputObject) }
+    end {
+        $csvEncoding = Get-CompatibleCsvEncoding -RequestedEncoding $Encoding
+        $buffer | Export-Csv -LiteralPath $Path -NoTypeInformation -Delimiter $Delimiter -Encoding $csvEncoding
+    }
 }
 
 if (-not (Test-Path -LiteralPath $OutputDirectory)) {
@@ -91,22 +125,77 @@ $groupsCsv = Join-Path $OutputDirectory "Groups.csv"
 $membershipsCsv = Join-Path $OutputDirectory "Memberships.csv"
 $errorsCsv = Join-Path $OutputDirectory "Errors.csv"
 
+$errors = [System.Collections.Generic.List[object]]::new()
+$membershipRows = [System.Collections.Generic.List[object]]::new()
+$objectCache = @{}
+$logonIndex = @{}
+
+Write-Host "Odnajdywanie kontrolerów domeny..." -ForegroundColor Cyan
+try {
+    $dcs = @(Get-ADDomainController -Filter * @adServerParams | Sort-Object HostName)
+}
+catch {
+    throw "Nie udało się pobrać listy kontrolerów domeny: $($_.Exception.Message)"
+}
+if ($dcs.Count -eq 0) { throw "Nie znaleziono kontrolerów domeny." }
+
+Write-Host ("Kontrolery domeny: {0}" -f (($dcs.HostName) -join ", ")) -ForegroundColor Cyan
+Write-Host "Budowanie indeksu dokładnych czasów logowania..." -ForegroundColor Cyan
+
+foreach ($dc in $dcs) {
+    try {
+        Write-Host ("  Odczyt: {0}" -f $dc.HostName) -ForegroundColor DarkCyan
+        $dcUsers = Get-ADUser -Filter * -Server $dc.HostName -Properties lastLogon,badPasswordTime,ObjectGUID -ErrorAction Stop
+        foreach ($u in $dcUsers) {
+            $key = $u.ObjectGUID.Guid
+            if (-not $logonIndex.ContainsKey($key)) {
+                $logonIndex[$key] = [PSCustomObject]@{
+                    LastLogonRaw = [Int64]0
+                    LastLogonSourceDC = $null
+                    LastBadRaw = [Int64]0
+                    LastBadSourceDC = $null
+                }
+            }
+
+            $entry = $logonIndex[$key]
+            if ($null -ne $u.lastLogon) {
+                $v = [Int64]$u.lastLogon
+                if ($v -gt $entry.LastLogonRaw) {
+                    $entry.LastLogonRaw = $v
+                    $entry.LastLogonSourceDC = $dc.HostName
+                }
+            }
+            if ($null -ne $u.badPasswordTime) {
+                $v = [Int64]$u.badPasswordTime
+                if ($v -gt $entry.LastBadRaw) {
+                    $entry.LastBadRaw = $v
+                    $entry.LastBadSourceDC = $dc.HostName
+                }
+            }
+        }
+    }
+    catch {
+        $errors.Add([PSCustomObject]@{
+            Timestamp = Get-Date
+            Operation = "BuildLogonIndex"
+            ObjectName = $null
+            DistinguishedName = $null
+            Error = ("DC {0}: {1}" -f $dc.HostName, $_.Exception.Message)
+        })
+        Write-Warning ("Nie udało się odczytać użytkowników z DC {0}: {1}" -f $dc.HostName, $_.Exception.Message)
+    }
+}
+
 $groupParams = @{
     Filter = $GroupFilter
-    Properties = @("Description","GroupCategory","GroupScope","mail","ManagedBy","SID","whenCreated","whenChanged")
+    Properties = @("Description","GroupCategory","GroupScope","mail","ManagedBy","whenCreated","whenChanged")
 }
 if ($SearchBase) { $groupParams.SearchBase = $SearchBase }
 
-if ($Domain) {
-    Write-Host ("Domena / serwer AD: {0}" -f $Domain) -ForegroundColor Cyan
-}
+if ($Domain) { Write-Host ("Domena / serwer AD: {0}" -f $Domain) -ForegroundColor Cyan }
 Write-Host "Pobieranie grup AD..." -ForegroundColor Cyan
 $groups = @(Get-ADGroup @groupParams @adServerParams | Sort-Object Name)
 Write-Host ("Znaleziono grup: {0}" -f $groups.Count) -ForegroundColor Cyan
-
-$objectCache = @{}
-$errors = [System.Collections.Generic.List[object]]::new()
-$membershipRows = [System.Collections.Generic.List[object]]::new()
 
 function Get-ADObjectDetails {
     param([Parameter(Mandatory)]$Member)
@@ -117,32 +206,67 @@ function Get-ADObjectDetails {
     try {
         switch ($Member.ObjectClass) {
             "user" {
-                $obj = Get-ADUser -Identity $Member.DistinguishedName -Properties DisplayName,UserPrincipalName,mail,Enabled,SID,DistinguishedName,SamAccountName @adServerParams
+                $obj = Get-ADUser -Identity $Member.DistinguishedName -Properties @(
+                    "DisplayName","UserPrincipalName","mail","Enabled","DistinguishedName","SamAccountName",
+                    "ObjectGUID","extensionAttribute2","extensionAttribute13","employeeID","employeeType"
+                ) @adServerParams
+
+                $timeEntry = $null
+                $guidKey = $obj.ObjectGUID.Guid
+                if ($logonIndex.ContainsKey($guidKey)) { $timeEntry = $logonIndex[$guidKey] }
+
+                $details = [PSCustomObject]@{
+                    Name = $obj.Name
+                    DisplayName = $obj.DisplayName
+                    SamAccountName = $obj.SamAccountName
+                    UserPrincipalName = $obj.UserPrincipalName
+                    Mail = $obj.mail
+                    Enabled = $obj.Enabled
+                    DNSHostName = $null
+                    DistinguishedName = $obj.DistinguishedName
+                    OU = Get-ParentOU -DistinguishedName $obj.DistinguishedName
+                    GroupCategory = $null
+                    GroupScope = $null
+                    LastLogon = if ($timeEntry) { Convert-FileTime $timeEntry.LastLogonRaw } else { $null }
+                    LastLogonSourceDC = if ($timeEntry) { $timeEntry.LastLogonSourceDC } else { $null }
+                    LastBadPasswordAttempt = if ($timeEntry) { Convert-FileTime $timeEntry.LastBadRaw } else { $null }
+                    LastBadPasswordSourceDC = if ($timeEntry) { $timeEntry.LastBadSourceDC } else { $null }
+                    ExtensionAttribute2 = $obj.extensionAttribute2
+                    ExtensionAttribute13 = $obj.extensionAttribute13
+                    EmployeeID = $obj.employeeID
+                    EmployeeType = $obj.employeeType
+                }
             }
             "computer" {
-                $obj = Get-ADComputer -Identity $Member.DistinguishedName -Properties DNSHostName,Enabled,SID,DistinguishedName,SamAccountName @adServerParams
+                $obj = Get-ADComputer -Identity $Member.DistinguishedName -Properties DNSHostName,Enabled,DistinguishedName,SamAccountName @adServerParams
+                $details = [PSCustomObject]@{
+                    Name=$obj.Name; DisplayName=$null; SamAccountName=$obj.SamAccountName; UserPrincipalName=$null;
+                    Mail=$null; Enabled=$obj.Enabled; DNSHostName=$obj.DNSHostName; DistinguishedName=$obj.DistinguishedName;
+                    OU=(Get-ParentOU $obj.DistinguishedName); GroupCategory=$null; GroupScope=$null;
+                    LastLogon=$null; LastLogonSourceDC=$null; LastBadPasswordAttempt=$null; LastBadPasswordSourceDC=$null;
+                    ExtensionAttribute2=$null; ExtensionAttribute13=$null; EmployeeID=$null; EmployeeType=$null
+                }
             }
             "group" {
-                $obj = Get-ADGroup -Identity $Member.DistinguishedName -Properties mail,GroupCategory,GroupScope,SID,DistinguishedName,SamAccountName @adServerParams
+                $obj = Get-ADGroup -Identity $Member.DistinguishedName -Properties mail,GroupCategory,GroupScope,DistinguishedName,SamAccountName @adServerParams
+                $details = [PSCustomObject]@{
+                    Name=$obj.Name; DisplayName=$null; SamAccountName=$obj.SamAccountName; UserPrincipalName=$null;
+                    Mail=$obj.mail; Enabled=$null; DNSHostName=$null; DistinguishedName=$obj.DistinguishedName;
+                    OU=(Get-ParentOU $obj.DistinguishedName); GroupCategory=$obj.GroupCategory; GroupScope=$obj.GroupScope;
+                    LastLogon=$null; LastLogonSourceDC=$null; LastBadPasswordAttempt=$null; LastBadPasswordSourceDC=$null;
+                    ExtensionAttribute2=$null; ExtensionAttribute13=$null; EmployeeID=$null; EmployeeType=$null
+                }
             }
             default {
-                $obj = Get-ADObject -Identity $Member.DistinguishedName -Properties mail,SID,DistinguishedName @adServerParams
+                $obj = Get-ADObject -Identity $Member.DistinguishedName -Properties mail,DistinguishedName @adServerParams
+                $details = [PSCustomObject]@{
+                    Name=$obj.Name; DisplayName=$null; SamAccountName=$null; UserPrincipalName=$null;
+                    Mail=$obj.mail; Enabled=$null; DNSHostName=$null; DistinguishedName=$obj.DistinguishedName;
+                    OU=(Get-ParentOU $obj.DistinguishedName); GroupCategory=$null; GroupScope=$null;
+                    LastLogon=$null; LastLogonSourceDC=$null; LastBadPasswordAttempt=$null; LastBadPasswordSourceDC=$null;
+                    ExtensionAttribute2=$null; ExtensionAttribute13=$null; EmployeeID=$null; EmployeeType=$null
+                }
             }
-        }
-
-        $details = [PSCustomObject]@{
-            Name              = $obj.Name
-            DisplayName       = if ($obj.PSObject.Properties.Name -contains "DisplayName") { $obj.DisplayName } else { $null }
-            SamAccountName    = if ($obj.PSObject.Properties.Name -contains "SamAccountName") { $obj.SamAccountName } else { $null }
-            UserPrincipalName = if ($obj.PSObject.Properties.Name -contains "UserPrincipalName") { $obj.UserPrincipalName } else { $null }
-            Mail              = if ($obj.PSObject.Properties.Name -contains "mail") { $obj.mail } else { $null }
-            Enabled           = if ($obj.PSObject.Properties.Name -contains "Enabled") { $obj.Enabled } else { $null }
-            DNSHostName       = if ($obj.PSObject.Properties.Name -contains "DNSHostName") { $obj.DNSHostName } else { $null }
-            SID               = if ($obj.PSObject.Properties.Name -contains "SID") { Convert-SidToString $obj.SID } else { $null }
-            DistinguishedName = $obj.DistinguishedName
-            OU                = Get-ParentOU -DistinguishedName $obj.DistinguishedName
-            GroupCategory     = if ($obj.PSObject.Properties.Name -contains "GroupCategory") { $obj.GroupCategory } else { $null }
-            GroupScope        = if ($obj.PSObject.Properties.Name -contains "GroupScope") { $obj.GroupScope } else { $null }
         }
 
         $objectCache[$cacheKey] = $details
@@ -158,18 +282,11 @@ function Get-ADObjectDetails {
         })
 
         return [PSCustomObject]@{
-            Name = $Member.Name
-            DisplayName = $null
-            SamAccountName = $Member.SamAccountName
-            UserPrincipalName = $null
-            Mail = $null
-            Enabled = $null
-            DNSHostName = $null
-            SID = $null
-            DistinguishedName = $Member.DistinguishedName
-            OU = Get-ParentOU -DistinguishedName $Member.DistinguishedName
-            GroupCategory = $null
-            GroupScope = $null
+            Name=$Member.Name; DisplayName=$null; SamAccountName=$Member.SamAccountName; UserPrincipalName=$null;
+            Mail=$null; Enabled=$null; DNSHostName=$null; DistinguishedName=$Member.DistinguishedName;
+            OU=(Get-ParentOU $Member.DistinguishedName); GroupCategory=$null; GroupScope=$null;
+            LastLogon=$null; LastLogonSourceDC=$null; LastBadPasswordAttempt=$null; LastBadPasswordSourceDC=$null;
+            ExtensionAttribute2=$null; ExtensionAttribute13=$null; EmployeeID=$null; EmployeeType=$null
         }
     }
 }
@@ -185,30 +302,14 @@ function Add-MembershipRow {
 
     if ($MembershipType -eq "Empty") {
         $membershipRows.Add([PSCustomObject]@{
-            GroupName = $RootGroup.Name
-            GroupSamAccountName = $RootGroup.SamAccountName
-            GroupCategory = $RootGroup.GroupCategory
-            GroupScope = $RootGroup.GroupScope
-            GroupMail = $RootGroup.mail
-            GroupSID = Convert-SidToString $RootGroup.SID
-            GroupDN = $RootGroup.DistinguishedName
-            GroupOU = Get-ParentOU $RootGroup.DistinguishedName
-            MembershipType = "Empty"
-            MembershipDepth = 0
-            MembershipPath = $MembershipPath
-            MemberObjectClass = $null
-            MemberName = $null
-            MemberDisplayName = $null
-            MemberSamAccountName = $null
-            MemberUPN = $null
-            MemberMail = $null
-            MemberEnabled = $null
-            MemberDNSHostName = $null
-            MemberSID = $null
-            MemberDN = $null
-            MemberOU = $null
-            MemberGroupCategory = $null
-            MemberGroupScope = $null
+            GroupName=$RootGroup.Name; GroupSamAccountName=$RootGroup.SamAccountName; GroupCategory=$RootGroup.GroupCategory;
+            GroupScope=$RootGroup.GroupScope; GroupMail=$RootGroup.mail; GroupDN=$RootGroup.DistinguishedName;
+            GroupOU=(Get-ParentOU $RootGroup.DistinguishedName); MembershipType="Empty"; MembershipDepth=0;
+            MembershipPath=$MembershipPath; MemberObjectClass=$null; MemberName=$null; MemberDisplayName=$null;
+            MemberSamAccountName=$null; MemberUPN=$null; MemberMail=$null; MemberEnabled=$null; MemberDNSHostName=$null;
+            MemberDN=$null; MemberOU=$null; MemberGroupCategory=$null; MemberGroupScope=$null; MemberLastLogon=$null;
+            MemberLastLogonSourceDC=$null; MemberLastBadPasswordAttempt=$null; MemberLastBadPasswordSourceDC=$null;
+            MemberExtensionAttribute2=$null; MemberExtensionAttribute13=$null; MemberEmployeeID=$null; MemberEmployeeType=$null
         })
         return
     }
@@ -216,30 +317,36 @@ function Add-MembershipRow {
     $details = Get-ADObjectDetails -Member $Member
 
     $membershipRows.Add([PSCustomObject]@{
-        GroupName = $RootGroup.Name
-        GroupSamAccountName = $RootGroup.SamAccountName
-        GroupCategory = $RootGroup.GroupCategory
-        GroupScope = $RootGroup.GroupScope
-        GroupMail = $RootGroup.mail
-        GroupSID = Convert-SidToString $RootGroup.SID
-        GroupDN = $RootGroup.DistinguishedName
-        GroupOU = Get-ParentOU $RootGroup.DistinguishedName
-        MembershipType = $MembershipType
-        MembershipDepth = $Depth
-        MembershipPath = $MembershipPath
-        MemberObjectClass = $Member.ObjectClass
-        MemberName = $details.Name
-        MemberDisplayName = $details.DisplayName
-        MemberSamAccountName = $details.SamAccountName
-        MemberUPN = $details.UserPrincipalName
-        MemberMail = $details.Mail
-        MemberEnabled = $details.Enabled
-        MemberDNSHostName = $details.DNSHostName
-        MemberSID = $details.SID
-        MemberDN = $details.DistinguishedName
-        MemberOU = $details.OU
-        MemberGroupCategory = $details.GroupCategory
-        MemberGroupScope = $details.GroupScope
+        GroupName=$RootGroup.Name
+        GroupSamAccountName=$RootGroup.SamAccountName
+        GroupCategory=$RootGroup.GroupCategory
+        GroupScope=$RootGroup.GroupScope
+        GroupMail=$RootGroup.mail
+        GroupDN=$RootGroup.DistinguishedName
+        GroupOU=Get-ParentOU $RootGroup.DistinguishedName
+        MembershipType=$MembershipType
+        MembershipDepth=$Depth
+        MembershipPath=$MembershipPath
+        MemberObjectClass=$Member.ObjectClass
+        MemberName=$details.Name
+        MemberDisplayName=$details.DisplayName
+        MemberSamAccountName=$details.SamAccountName
+        MemberUPN=$details.UserPrincipalName
+        MemberMail=$details.Mail
+        MemberEnabled=$details.Enabled
+        MemberDNSHostName=$details.DNSHostName
+        MemberDN=$details.DistinguishedName
+        MemberOU=$details.OU
+        MemberGroupCategory=$details.GroupCategory
+        MemberGroupScope=$details.GroupScope
+        MemberLastLogon=$details.LastLogon
+        MemberLastLogonSourceDC=$details.LastLogonSourceDC
+        MemberLastBadPasswordAttempt=$details.LastBadPasswordAttempt
+        MemberLastBadPasswordSourceDC=$details.LastBadPasswordSourceDC
+        MemberExtensionAttribute2=$details.ExtensionAttribute2
+        MemberExtensionAttribute13=$details.ExtensionAttribute13
+        MemberEmployeeID=$details.EmployeeID
+        MemberEmployeeType=$details.EmployeeType
     })
 }
 
@@ -257,11 +364,8 @@ function Expand-GroupMembership {
     }
     catch {
         $errors.Add([PSCustomObject]@{
-            Timestamp = Get-Date
-            Operation = "Get-ADGroupMember"
-            ObjectName = $RootGroup.Name
-            DistinguishedName = $CurrentGroupDN
-            Error = $_.Exception.Message
+            Timestamp=Get-Date; Operation="Get-ADGroupMember"; ObjectName=$RootGroup.Name;
+            DistinguishedName=$CurrentGroupDN; Error=$_.Exception.Message
         })
         return
     }
@@ -275,14 +379,11 @@ function Expand-GroupMembership {
 
         if ($ExpandNested -and $member.ObjectClass -eq "group") {
             $nestedGroupDN = [string]$member.DistinguishedName
-
             if ($GroupsInCurrentPath.Contains($nestedGroupDN)) {
                 $errors.Add([PSCustomObject]@{
-                    Timestamp = Get-Date
-                    Operation = "NestedGroupCycle"
-                    ObjectName = $member.Name
-                    DistinguishedName = $nestedGroupDN
-                    Error = "Wykryto cykliczne zagnieżdżenie grup. Rekurencja dla tej ścieżki została zatrzymana."
+                    Timestamp=Get-Date; Operation="NestedGroupCycle"; ObjectName=$member.Name;
+                    DistinguishedName=$nestedGroupDN;
+                    Error="Wykryto cykliczne zagnieżdżenie grup. Rekurencja dla tej ścieżki została zatrzymana."
                 })
                 continue
             }
@@ -298,30 +399,27 @@ function Expand-GroupMembership {
 
 $groupRows = foreach ($group in $groups) {
     [PSCustomObject]@{
-        Name = $group.Name
-        SamAccountName = $group.SamAccountName
-        GroupCategory = $group.GroupCategory
-        GroupScope = $group.GroupScope
-        Description = $group.Description
-        Mail = $group.mail
-        ManagedBy = $group.ManagedBy
-        SID = Convert-SidToString $group.SID
-        DistinguishedName = $group.DistinguishedName
-        OU = Get-ParentOU $group.DistinguishedName
-        WhenCreated = $group.whenCreated
-        WhenChanged = $group.whenChanged
+        Name=$group.Name
+        SamAccountName=$group.SamAccountName
+        GroupCategory=$group.GroupCategory
+        GroupScope=$group.GroupScope
+        Description=$group.Description
+        Mail=$group.mail
+        ManagedBy=$group.ManagedBy
+        DistinguishedName=$group.DistinguishedName
+        OU=Get-ParentOU $group.DistinguishedName
+        WhenCreated=$group.whenCreated
+        WhenChanged=$group.whenChanged
     }
 }
 
 $counter = 0
 foreach ($group in $groups) {
     $counter++
-
-    Write-Progress -Activity "Eksport członkostwa grup AD" -Status ("{0}/{1}: {2}" -f $counter, $groups.Count, $group.Name) -PercentComplete (($counter / [math]::Max($groups.Count, 1)) * 100)
+    Write-Progress -Activity "Eksport członkostwa grup AD" -Status ("{0}/{1}: {2}" -f $counter,$groups.Count,$group.Name) -PercentComplete (($counter / [math]::Max($groups.Count,1))*100)
 
     try {
         $directMembers = @(Get-ADGroupMember -Identity $group.DistinguishedName -ErrorAction Stop @adServerParams)
-
         if ($directMembers.Count -eq 0) {
             if ($IncludeEmptyGroups) {
                 Add-MembershipRow -RootGroup $group -Member $null -MembershipType "Empty" -Depth 0 -MembershipPath $group.Name
@@ -331,28 +429,20 @@ foreach ($group in $groups) {
 
         $pathSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         [void]$pathSet.Add([string]$group.DistinguishedName)
-
         Expand-GroupMembership -RootGroup $group -CurrentGroupDN $group.DistinguishedName -Depth 1 -PathParts @($group.Name) -GroupsInCurrentPath $pathSet
     }
     catch {
         $errors.Add([PSCustomObject]@{
-            Timestamp = Get-Date
-            Operation = "ProcessGroup"
-            ObjectName = $group.Name
-            DistinguishedName = $group.DistinguishedName
-            Error = $_.Exception.Message
+            Timestamp=Get-Date; Operation="ProcessGroup"; ObjectName=$group.Name;
+            DistinguishedName=$group.DistinguishedName; Error=$_.Exception.Message
         })
     }
 }
-
 Write-Progress -Activity "Eksport członkostwa grup AD" -Completed
 
-$groupRows | Export-Csv -LiteralPath $groupsCsv -NoTypeInformation -Delimiter $Delimiter -Encoding $Encoding
-$membershipRows | Export-Csv -LiteralPath $membershipsCsv -NoTypeInformation -Delimiter $Delimiter -Encoding $Encoding
-
-if ($errors.Count -gt 0) {
-    $errors | Export-Csv -LiteralPath $errorsCsv -NoTypeInformation -Delimiter $Delimiter -Encoding $Encoding
-}
+$groupRows | Export-ReadableCsv -Path $groupsCsv
+$membershipRows | Export-ReadableCsv -Path $membershipsCsv
+if ($errors.Count -gt 0) { $errors | Export-ReadableCsv -Path $errorsCsv }
 
 Write-Host ""
 Write-Host "Eksport zakończony." -ForegroundColor Green
