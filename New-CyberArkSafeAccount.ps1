@@ -1,53 +1,62 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Tworzy Safe w CyberArk PAM, nadaje członkom uprawnienia z pliku JSON,
-    dodaje konto do Safe i uruchamia reconcile.
+    Tworzy Safe w CyberArk PAM, przypisuje członków z rolami, dodaje konto
+    i uruchamia Reconcile.
 
 .DESCRIPTION
-    Skrypt korzysta z CyberArk PVWA REST API i wykonuje kolejno:
-      1. logowanie do PVWA,
-      2. utworzenie Safe,
-      3. dodanie członków Safe z uprawnieniami wynikającymi z definicji ról,
-      4. onboarding wskazanego konta do Safe,
-      5. uruchomienie reconcile dla nowo utworzonego konta,
-      6. wylogowanie z PVWA.
+    Skrypt jest przeznaczony dla jednego, stałego typu konta opisanego w JSON.
+    Nazwa Safe oraz login konta są przekazywane jako parametry.
 
-    Definicje ról i członków znajdują się w pliku JSON. Hasło konta nie powinno
-    być przechowywane w pliku konfiguracyjnym. Jeśli -AccountSecret nie zostanie
-    podany, skrypt poprosi o nie interaktywnie jako SecureString.
+    Dla każdego Safe automatycznie wyliczana jest grupa właścicieli:
+        <SafeName><ownerGroupSuffix>
+
+    Domyślnie daje to np.:
+        APP-PRD-SQL01_owner
+
+    Grupa jest dodawana do Safe z uprawnieniami roli Owner z pliku JSON.
+
+    Pole CyberArk Account "name" (Object Name) nie jest wysyłane do API.
+    CyberArk generuje nazwę obiektu konta zgodnie z własnym mechanizmem.
 
 .PARAMETER PVWAURL
     Bazowy URL PVWA, np. https://pvwa.example.com/PasswordVault.
 
+.PARAMETER SafeName
+    Nazwa tworzonego Safe, np. APP-PRD-SQL01.
+
+.PARAMETER AccountUserName
+    Login konta dodawanego do Safe, np. svc_sql.
+
 .PARAMETER ConfigPath
-    Ścieżka do pliku JSON opisującego Safe, role, członków i konto.
+    Ścieżka do pliku JSON. Plik definiuje stałe właściwości Safe, typ konta,
+    role, stałych członków oraz sposób tworzenia grupy Owner.
 
 .PARAMETER AuthType
-    Metoda logowania do PVWA: CyberArk, LDAP albo Radius.
+    Metoda logowania: CyberArk, LDAP albo Radius.
 
 .PARAMETER Credential
-    Opcjonalny PSCredential do logowania do PVWA. Jeśli brak, zostanie wywołany
-    Get-Credential.
+    Opcjonalny PSCredential do logowania do PVWA.
 
 .PARAMETER AccountSecret
-    Początkowy sekret konta dodawanego do CyberArk. Jeśli nie zostanie podany,
-    skrypt poprosi o niego przez Read-Host -AsSecureString.
+    Początkowy sekret konta. Jeśli nie zostanie przekazany, skrypt poprosi
+    o niego jako SecureString.
 
 .PARAMETER AllowExistingSafe
-    Pozwala użyć istniejącego Safe zamiast kończyć działanie błędem.
+    Pozwala użyć istniejącego Safe.
 
 .PARAMETER UpdateExistingMembers
-    Jeśli członek już istnieje w Safe, aktualizuje jego uprawnienia zgodnie
-    z plikiem konfiguracyjnym.
+    Aktualizuje uprawnienia członków, którzy już istnieją w Safe.
 
 .PARAMETER SkipReconcile
-    Dodaje konto, ale nie uruchamia reconcile. Przydatne do testów.
+    Pomija operację Reconcile.
 
 .EXAMPLE
     .\New-CyberArkSafeAccount.ps1 `
         -PVWAURL "https://pvwa.example.com/PasswordVault" `
         -AuthType LDAP `
+        -SafeName "APP-PRD-SQL01" `
+        -AccountUserName "svc_sql" `
         -ConfigPath .\CyberArk-SafeConfig.example.json
 
 .EXAMPLE
@@ -56,15 +65,17 @@
     .\New-CyberArkSafeAccount.ps1 `
         -PVWAURL "https://pvwa.example.com/PasswordVault" `
         -AuthType CyberArk `
+        -SafeName "APP-PRD-SQL01" `
+        -AccountUserName "svc_sql" `
         -ConfigPath .\CyberArk-SafeConfig.example.json `
         -AccountSecret $secret
 
 .EXAMPLE
     .\New-CyberArkSafeAccount.ps1 `
         -PVWAURL "https://pvwa.example.com/PasswordVault" `
+        -SafeName "APP-PRD-SQL01" `
+        -AccountUserName "svc_sql" `
         -ConfigPath .\CyberArk-SafeConfig.example.json `
-        -AllowExistingSafe `
-        -UpdateExistingMembers `
         -WhatIf
 
 .NOTES
@@ -74,8 +85,7 @@
       - dodawania kont,
       - inicjowania operacji CPM (Reconcile).
 
-    Skrypt celowo nie obsługuje hasła konta w JSON, aby nie utrwalać sekretu
-    w repozytorium.
+    Hasło konta nie jest przechowywane w pliku konfiguracyjnym.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "Medium")]
@@ -83,6 +93,14 @@ param(
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$PVWAURL,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SafeName,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$AccountUserName,
 
     [Parameter(Mandatory)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
@@ -137,14 +155,10 @@ function Get-ObjectProperty {
         [Parameter(Mandatory)][string]$Name
     )
 
-    if ($null -eq $Object) {
-        return $null
-    }
+    if ($null -eq $Object) { return $null }
 
     $property = $Object.PSObject.Properties[$Name]
-    if ($null -eq $property) {
-        return $null
-    }
+    if ($null -eq $property) { return $null }
 
     return $property.Value
 }
@@ -156,6 +170,16 @@ function Test-ObjectProperty {
     )
 
     return ($null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name])
+}
+
+function Expand-TemplateValue {
+    param($Value)
+
+    if ($Value -is [string]) {
+        return $Value.Replace("{SafeName}", $SafeName).Replace("{AccountUserName}", $AccountUserName)
+    }
+
+    return $Value
 }
 
 function ConvertFrom-SecureStringPlainText {
@@ -176,9 +200,7 @@ function ConvertFrom-SecureStringPlainText {
 function Get-HttpStatusCode {
     param($Exception)
 
-    if ($null -eq $Exception) {
-        return $null
-    }
+    if ($null -eq $Exception) { return $null }
 
     try {
         if ($null -ne $Exception.Response.StatusCode) {
@@ -241,11 +263,11 @@ function Invoke-CyberArkApi {
 
 function Get-SafeByName {
     param(
-        [Parameter(Mandatory)][string]$SafeName,
+        [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][hashtable]$Headers
     )
 
-    $safeId = [uri]::EscapeDataString($SafeName)
+    $safeId = [uri]::EscapeDataString($Name)
 
     try {
         return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId" -Headers $Headers
@@ -293,7 +315,7 @@ function ConvertTo-PermissionObject {
 
     foreach ($property in $RoleDefinition.PSObject.Properties) {
         if ($property.Name -notin $permissionNames) {
-            throw "Nieznane uprawnienie '$($property.Name)' w definicji roli. Popraw plik konfiguracyjny."
+            throw "Nieznane uprawnienie '$($property.Name)' w definicji roli."
         }
 
         if ($property.Value -isnot [bool]) {
@@ -308,22 +330,10 @@ function ConvertTo-PermissionObject {
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-if (-not (Test-ObjectProperty $config "safe")) {
-    throw "W pliku konfiguracyjnym brakuje sekcji 'safe'."
-}
-if (-not (Test-ObjectProperty $config "roles")) {
-    throw "W pliku konfiguracyjnym brakuje sekcji 'roles'."
-}
-if (-not (Test-ObjectProperty $config "members")) {
-    throw "W pliku konfiguracyjnym brakuje sekcji 'members'."
-}
-if (-not (Test-ObjectProperty $config "account")) {
-    throw "W pliku konfiguracyjnym brakuje sekcji 'account'."
-}
-
-$safeName = [string](Get-ObjectProperty $config.safe "safeName")
-if ([string]::IsNullOrWhiteSpace($safeName)) {
-    throw "safe.safeName jest wymagane."
+foreach ($requiredSection in @("safe", "owner", "roles", "account")) {
+    if (-not (Test-ObjectProperty $config $requiredSection)) {
+        throw "W pliku konfiguracyjnym brakuje sekcji '$requiredSection'."
+    }
 }
 
 if ((Test-ObjectProperty $config.safe "numberOfDaysRetention") -and
@@ -331,23 +341,59 @@ if ((Test-ObjectProperty $config.safe "numberOfDaysRetention") -and
     throw "Ustaw tylko jedno: safe.numberOfDaysRetention albo safe.numberOfVersionsRetention."
 }
 
-foreach ($requiredAccountProperty in @("address", "userName", "platformId")) {
+foreach ($requiredAccountProperty in @("address", "platformId")) {
     $value = [string](Get-ObjectProperty $config.account $requiredAccountProperty)
     if ([string]::IsNullOrWhiteSpace($value)) {
         throw "account.$requiredAccountProperty jest wymagane."
     }
 }
 
-foreach ($member in @($config.members)) {
+$ownerRoleName = [string](Get-ObjectProperty $config.owner "role")
+if ([string]::IsNullOrWhiteSpace($ownerRoleName)) {
+    $ownerRoleName = "Owner"
+}
+
+if ($null -eq $config.roles.PSObject.Properties[$ownerRoleName]) {
+    throw "Brak definicji roli Owner '$ownerRoleName' w sekcji roles."
+}
+
+$ownerGroupSuffix = [string](Get-ObjectProperty $config.owner "groupSuffix")
+if ([string]::IsNullOrWhiteSpace($ownerGroupSuffix)) {
+    $ownerGroupSuffix = "_owner"
+}
+
+$ownerSearchIn = [string](Get-ObjectProperty $config.owner "searchIn")
+if ([string]::IsNullOrWhiteSpace($ownerSearchIn)) {
+    throw "owner.searchIn jest wymagane, np. CORP."
+}
+
+$ownerGroupName = $SafeName + $ownerGroupSuffix
+
+$members = [System.Collections.Generic.List[object]]::new()
+$members.Add([PSCustomObject]@{
+    name     = $ownerGroupName
+    searchIn = $ownerSearchIn
+    role     = $ownerRoleName
+})
+
+if (Test-ObjectProperty $config "members") {
+    foreach ($member in @($config.members)) {
+        $members.Add($member)
+    }
+}
+
+foreach ($member in $members) {
     $memberName = [string](Get-ObjectProperty $member "name")
     $roleName = [string](Get-ObjectProperty $member "role")
 
     if ([string]::IsNullOrWhiteSpace($memberName)) {
-        throw "Każdy element members musi zawierać pole 'name'."
+        throw "Każdy członek Safe musi mieć pole 'name'."
     }
+
     if ([string]::IsNullOrWhiteSpace($roleName)) {
         throw "Członek '$memberName' nie ma przypisanej roli."
     }
+
     if ($null -eq $config.roles.PSObject.Properties[$roleName]) {
         throw "Członek '$memberName' odwołuje się do niezdefiniowanej roli '$roleName'."
     }
@@ -393,26 +439,33 @@ try {
 
     $headers = @{ Authorization = [string]$token }
 
-    Write-Host "Sprawdzanie Safe '$safeName'..." -ForegroundColor Cyan
-    $safe = Get-SafeByName -SafeName $safeName -Headers $headers
+    Write-Host "Sprawdzanie Safe '$SafeName'..." -ForegroundColor Cyan
+    $safe = Get-SafeByName -Name $SafeName -Headers $headers
 
     if ($null -ne $safe -and -not $AllowExistingSafe) {
-        throw "Safe '$safeName' już istnieje. Użyj -AllowExistingSafe, jeśli chcesz go wykorzystać."
+        throw "Safe '$SafeName' już istnieje. Użyj -AllowExistingSafe, jeśli chcesz go wykorzystać."
     }
 
     if ($null -eq $safe) {
         $safeBody = [ordered]@{
-            safeName = $safeName
+            safeName = $SafeName
         }
 
-        foreach ($propertyName in @("description", "location", "managingCPM", "olacEnabled", "numberOfDaysRetention", "numberOfVersionsRetention")) {
+        foreach ($propertyName in @(
+            "description",
+            "location",
+            "managingCPM",
+            "olacEnabled",
+            "numberOfDaysRetention",
+            "numberOfVersionsRetention"
+        )) {
             if (Test-ObjectProperty $config.safe $propertyName) {
-                $safeBody[$propertyName] = Get-ObjectProperty $config.safe $propertyName
+                $safeBody[$propertyName] = Expand-TemplateValue (Get-ObjectProperty $config.safe $propertyName)
             }
         }
 
-        if ($PSCmdlet.ShouldProcess("Safe '$safeName'", "Utworzenie Safe")) {
-            Write-Host "Tworzenie Safe '$safeName'..." -ForegroundColor Cyan
+        if ($PSCmdlet.ShouldProcess("Safe '$SafeName'", "Utworzenie Safe")) {
+            Write-Host "Tworzenie Safe '$SafeName'..." -ForegroundColor Cyan
             $safe = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes" -Headers $headers -Body $safeBody -TimeoutSec 300
             Write-Host "Safe utworzony." -ForegroundColor Green
         }
@@ -421,7 +474,7 @@ try {
         Write-Host "Safe już istnieje — kontynuuję zgodnie z -AllowExistingSafe." -ForegroundColor Yellow
     }
 
-    $safeIdentifier = $safeName
+    $safeIdentifier = $SafeName
     if ($null -ne $safe) {
         $safeUrlId = [string](Get-ObjectProperty $safe "safeUrlId")
         if (-not [string]::IsNullOrWhiteSpace($safeUrlId)) {
@@ -429,10 +482,11 @@ try {
         }
     }
 
-    foreach ($member in @($config.members)) {
-        $memberName = [string](Get-ObjectProperty $member "name")
+    foreach ($member in $members) {
+        $memberName = Expand-TemplateValue ([string](Get-ObjectProperty $member "name"))
         $roleName = [string](Get-ObjectProperty $member "role")
         $searchIn = [string](Get-ObjectProperty $member "searchIn")
+
         if ([string]::IsNullOrWhiteSpace($searchIn)) {
             $searchIn = "Vault"
         }
@@ -456,7 +510,7 @@ try {
         }
 
         if ($null -eq $existingMember) {
-            if ($PSCmdlet.ShouldProcess("Safe '$safeName' / '$memberName'", "Dodanie członka z rolą '$roleName'")) {
+            if ($PSCmdlet.ShouldProcess("Safe '$SafeName' / '$memberName'", "Dodanie członka z rolą '$roleName'")) {
                 Write-Host "Dodawanie członka '$memberName' jako '$roleName'..." -ForegroundColor Cyan
                 $escapedSafe = [uri]::EscapeDataString($safeIdentifier)
                 Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes/$escapedSafe/Members" -Headers $headers -Body $memberBody | Out-Null
@@ -471,7 +525,7 @@ try {
                 $updateBody.membershipExpirationDate = Get-ObjectProperty $member "membershipExpirationDate"
             }
 
-            if ($PSCmdlet.ShouldProcess("Safe '$safeName' / '$memberName'", "Aktualizacja uprawnień członka do roli '$roleName'")) {
+            if ($PSCmdlet.ShouldProcess("Safe '$SafeName' / '$memberName'", "Aktualizacja uprawnień do roli '$roleName'")) {
                 Write-Host "Aktualizacja członka '$memberName' do roli '$roleName'..." -ForegroundColor Cyan
                 $escapedSafe = [uri]::EscapeDataString($safeIdentifier)
                 $escapedMember = [uri]::EscapeDataString($memberName)
@@ -479,25 +533,15 @@ try {
             }
         }
         else {
-            throw "Członek '$memberName' już istnieje w Safe '$safeName'. Użyj -UpdateExistingMembers, aby zaktualizować jego uprawnienia."
+            throw "Członek '$memberName' już istnieje w Safe '$SafeName'. Użyj -UpdateExistingMembers, aby zaktualizować jego uprawnienia."
         }
     }
 
-    $accountName = [string](Get-ObjectProperty $config.account "name")
-    if ([string]::IsNullOrWhiteSpace($accountName)) {
-        $accountName = "{0}-{1}-{2}" -f `
-            ([string](Get-ObjectProperty $config.account "platformId")), `
-            ([string](Get-ObjectProperty $config.account "address")), `
-            ([string](Get-ObjectProperty $config.account "userName"))
-    }
-
-    $accountTarget = "{0}@{1}" -f `
-        ([string](Get-ObjectProperty $config.account "userName")), `
-        ([string](Get-ObjectProperty $config.account "address"))
-
+    $accountAddress = Expand-TemplateValue ([string](Get-ObjectProperty $config.account "address"))
+    $accountTarget = "$AccountUserName@$accountAddress"
     $createdAccount = $null
 
-    if ($PSCmdlet.ShouldProcess("Konto '$accountTarget' w Safe '$safeName'", "Dodanie konta do CyberArk")) {
+    if ($PSCmdlet.ShouldProcess("Konto '$accountTarget' w Safe '$SafeName'", "Dodanie konta do CyberArk")) {
         if ($null -eq $AccountSecret) {
             $AccountSecret = Read-Host "Podaj początkowy sekret konta '$accountTarget'" -AsSecureString
         }
@@ -510,17 +554,21 @@ try {
                 $secretType = "password"
             }
 
+            # Celowo bez pola "name". CyberArk generuje Object Name.
             $accountBody = [ordered]@{
-                name       = $accountName
-                address    = [string](Get-ObjectProperty $config.account "address")
-                userName   = [string](Get-ObjectProperty $config.account "userName")
+                address    = $accountAddress
+                userName   = $AccountUserName
                 platformId = [string](Get-ObjectProperty $config.account "platformId")
-                safeName   = $safeName
+                safeName   = $SafeName
                 secretType = $secretType
                 secret     = $plainSecret
             }
 
-            foreach ($propertyName in @("platformAccountProperties", "secretManagement", "remoteMachinesAccess")) {
+            foreach ($propertyName in @(
+                "platformAccountProperties",
+                "secretManagement",
+                "remoteMachinesAccess"
+            )) {
                 if (Test-ObjectProperty $config.account $propertyName) {
                     $accountBody[$propertyName] = Get-ObjectProperty $config.account $propertyName
                 }
@@ -542,11 +590,12 @@ try {
         }
 
         if ([string]::IsNullOrWhiteSpace($accountId)) {
-            throw "Konto zostało utworzone, ale odpowiedź API nie zawiera jego ID. Reconcile nie może zostać uruchomiony automatycznie."
+            throw "Konto zostało utworzone, ale API nie zwróciło jego ID. Reconcile nie może zostać uruchomiony automatycznie."
         }
 
         if ($PSCmdlet.ShouldProcess("Konto '$accountTarget' (ID: $accountId)", "Uruchomienie Reconcile")) {
             $escapedAccountId = [uri]::EscapeDataString($accountId)
+
             Write-Host "Uruchamianie Reconcile..." -ForegroundColor Cyan
             Invoke-CyberArkApi `
                 -Method Post `
@@ -564,9 +613,9 @@ try {
 
     Write-Host ""
     Write-Host "Operacja zakończona." -ForegroundColor Green
-    Write-Host ("Safe:    {0}" -f $safeName)
-    Write-Host ("Konto:   {0}" -f $accountTarget)
-    Write-Host ("Członkowie z konfiguracji: {0}" -f @($config.members).Count)
+    Write-Host ("Safe:        {0}" -f $SafeName)
+    Write-Host ("Owner group: {0}" -f $ownerGroupName)
+    Write-Host ("Konto:       {0}" -f $accountTarget)
 }
 finally {
     if ($headers -and $token) {
