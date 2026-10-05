@@ -295,13 +295,14 @@ Pełność danych zależy od uprawnień konta raportującego w CyberArk, zwłasz
 Automatyzuje utworzenie Safe i onboarding jednego, stałego typu konta:
 
 1. loguje się do PVWA,
-2. tworzy Safe o nazwie podanej w parametrze `-SafeName`,
-3. automatycznie dodaje grupę AD owner o nazwie `<SafeName>_owner`,
-4. przypisuje jej uprawnienia roli `Owner` z JSON,
-5. dodaje opcjonalnych stałych członków Safe z sekcji `members`,
-6. dodaje konto o loginie podanym w `-AccountUserName`,
-7. zleca `Reconcile` przez CPM,
-8. wylogowuje sesję PVWA.
+2. przed jakąkolwiek zmianą w CyberArk sprawdza w Active Directory, czy istnieje grupa `<SafeName>_owner`,
+3. tworzy Safe o nazwie podanej w parametrze `-SafeName`,
+4. automatycznie dodaje grupę AD owner o nazwie `<SafeName>_owner`,
+5. przypisuje jej uprawnienia roli `Owner` z JSON,
+6. dodaje opcjonalnych stałych członków Safe z sekcji `members`,
+7. dodaje konto o loginie podanym w `-AccountUserName`,
+8. zleca `Reconcile` przez CPM,
+9. wylogowuje sesję PVWA.
 
 Nazwa Safe i login konta **nie są zapisane w JSON**. Są przekazywane przy uruchomieniu:
 
@@ -311,7 +312,8 @@ Nazwa Safe i login konta **nie są zapisane w JSON**. Są przekazywane przy uruc
     -AuthType LDAP `
     -SafeName "APP-PRD-SQL01" `
     -AccountUserName "svc_sql" `
-    -ConfigPath .\CyberArk-SafeConfig.example.json
+    -ConfigPath .\CyberArk-SafeConfig.example.json `
+    -ADServer "corp.example.com"
 ```
 
 Dla powyższego przykładu skrypt utworzy grupę właścicieli:
@@ -331,6 +333,8 @@ Sposób budowania tej nazwy jest kontrolowany przez sekcję:
 ```
 
 `searchIn` wskazuje katalog, w którym CyberArk ma wyszukać grupę. Rola `Owner` musi istnieć w sekcji `roles`.
+
+Przed zalogowaniem do CyberArk skrypt ładuje moduł `ActiveDirectory` i sprawdza, czy grupa Owner rzeczywiście istnieje. `-ADServer` jest opcjonalny i może wskazywać domenę DNS albo konkretny kontroler domeny. Jeśli grupa nie istnieje, skrypt kończy działanie bez zmian w CyberArk.
 
 Sekcja `account` opisuje wyłącznie stały typ konta, np.:
 
@@ -376,6 +380,8 @@ $secret = Read-Host "Początkowe hasło konta" -AsSecureString
     -ConfigPath .\CyberArk-SafeConfig.example.json `
     -WhatIf
 ```
+
+`members` jest opcjonalną listą dodatkowych, stałych członków Safe. Nie jest używana do grupy Owner. Jeśli nie chcesz dodawać np. wspólnych grup operatorów lub audytorów do każdego Safe, sekcję `members` można usunąć z JSON.
 
 Dodatkowe przełączniki:
 
