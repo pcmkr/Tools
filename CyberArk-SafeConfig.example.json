@@ -3,8 +3,8 @@
     "description": "Safe dla {SafeName}",
     "location": "\\",
     "managingCPM": "PasswordManager",
-    "numberOfVersionsRetention": 5,
-    "olacEnabled": false
+    "olacEnabled": false,
+    "numberOfDaysRetention": 10
   },
   "owner": {
     "role": "Owner",
@@ -46,14 +46,9 @@
   },
   "members": [
     {
-      "name": "PAM-Operators",
-      "searchIn": "CORP",
-      "role": "Operator"
-    },
-    {
-      "name": "PAM-Auditors",
-      "searchIn": "CORP",
-      "role": "Auditor"
+      "name": "Vault Admins",
+      "searchIn": "Vault",
+      "role": "Owner"
     }
   ],
   "account": {
@@ -66,5 +61,13 @@
     "secretManagement": {
       "automaticManagementEnabled": true
     }
+  },
+  "defaults": {
+    "pvwaUrl": "https://pvwa.example.com/PasswordVault",
+    "authType": "LDAP",
+    "accountUserName": "svc_sql",
+    "accountSecretEnvironmentVariable": "CYBERARK_ACCOUNT_SECRET",
+    "accountSecret": null,
+    "adServer": "corp.example.com"
   }
 }
