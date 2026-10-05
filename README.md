@@ -6,7 +6,8 @@ Prywatne repozytorium z narzędziami administracyjnymi i audytowymi dla Active D
 
 | Plik | Zastosowanie |
 |---|---|
-| `Export-ADGroupMembership.ps1` | Eksport grup AD, członków, członkostwa bezpośredniego i zagnieżdżonego |
+| `Export-ADGroupMembership.ps1` | Eksport grup AD, członków, dokładnych czasów logowania i atrybutów HR |
+| `Export-AllADUsers.ps1` | Eksport wszystkich użytkowników AD ze wszystkimi właściwościami i dokładnymi czasami logowania |
 | `Export-ADUserState.ps1` | Audyt stanu wskazanych kont AD z listy sAMAccountName |
 | `Find-InactiveADUsers.ps1` | Lista kont AD nieaktywnych od wskazanej liczby dni |
 | `Export-CyberArkUsers.ps1` | Eksport użytkowników CyberArk PAM oraz ich typu/roli i VaultAuthorization |
@@ -63,7 +64,9 @@ Obsługuje:
 - `MembershipDepth`,
 - pełną ścieżkę członkostwa,
 - użytkowników, komputery i grupy,
-- SID, DN, OU, mail, stan Enabled,
+- DN, OU, mail, stan Enabled,
+- dokładny `LastLogon` i `LastBadPasswordAttempt` z maksimum ze wszystkich dostępnych DC,
+- `extensionAttribute2`, `extensionAttribute13`, `employeeID`, `employeeType`,
 - scope/category grup,
 - wykrywanie cyklicznego zagnieżdżenia.
 
@@ -97,6 +100,36 @@ Obsługuje:
 Parametr `-Domain` przyjmuje domenę DNS lub konkretny DC. Dostępne są aliasy `-Server` i `-DomainController`.
 
 ---
+
+## Export-AllADUsers.ps1
+
+Eksportuje wszystkich użytkowników AD wraz ze wszystkimi właściwościami zwracanymi przez `Get-ADUser -Properties *`.
+
+Dodatkowo tworzy jednoznaczne kolumny:
+
+- `LastLogonExact` — maksimum niereplikowanego `lastLogon` ze wszystkich dostępnych DC,
+- `LastLogonSourceDC`,
+- `LastBadPasswordAttemptExact` — maksimum niereplikowanego `badPasswordTime`,
+- `LastBadPasswordSourceDC`.
+
+Atrybuty wielowartościowe są spłaszczane do jednej komórki. Domyślny CSV używa średnika i UTF-8 z BOM, dzięki czemu jest wygodny do otwierania w polskim Excelu.
+
+### Pełny eksport domeny
+
+```powershell
+.\Export-AllADUsers.ps1 -Domain corp.example.com
+```
+
+### Eksport konkretnego OU
+
+```powershell
+.\Export-AllADUsers.ps1 `
+    -Domain corp.example.com `
+    -SearchBase "OU=Users,DC=corp,DC=example,DC=com" `
+    -OutputPath C:\Temp\AD-AllUsers.csv
+```
+
+Skrypt agreguje dane logowania wydajnie: wykonuje po jednym lekkim odczycie użytkowników na każdy DC zamiast odpytania każdego DC osobno dla każdego konta.
 
 ## Export-ADUserState.ps1
 
