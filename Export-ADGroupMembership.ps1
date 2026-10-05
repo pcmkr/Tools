@@ -147,7 +147,7 @@ foreach ($dc in $dcs) {
         Write-Host ("  Odczyt: {0}" -f $dc.HostName) -ForegroundColor DarkCyan
         $dcUsers = Get-ADUser -Filter * -Server $dc.HostName -Properties lastLogon,badPasswordTime,ObjectGUID -ErrorAction Stop
         foreach ($u in $dcUsers) {
-            $key = $u.ObjectGUID.Guid
+            $key = $u.ObjectGUID.ToString()
             if (-not $logonIndex.ContainsKey($key)) {
                 $logonIndex[$key] = [PSCustomObject]@{
                     LastLogonRaw = [Int64]0
@@ -212,7 +212,7 @@ function Get-ADObjectDetails {
                 ) @adServerParams
 
                 $timeEntry = $null
-                $guidKey = $obj.ObjectGUID.Guid
+                $guidKey = $obj.ObjectGUID.ToString()
                 if ($logonIndex.ContainsKey($guidKey)) { $timeEntry = $logonIndex[$guidKey] }
 
                 $details = [PSCustomObject]@{
