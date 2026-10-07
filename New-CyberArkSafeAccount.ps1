@@ -458,47 +458,19 @@ catch {
     throw "Nie można załadować modułu ActiveDirectory. Zainstaluj RSAT Active Directory PowerShell. Szczegóły: $($_.Exception.Message)"
 }
 
-function ConvertTo-LdapFilterValue {
-    param([Parameter(Mandatory)][string]$Value)
-
-    return $Value.
-        Replace("\", "\5c").
-        Replace("*", "\2a").
-        Replace("(", "\28").
-        Replace(")", "\29").
-        Replace([char]0, "\00")
-}
-
 try {
-    $ownerADDomain = Get-ADDomain -Identity $ADServer -Server $ADServer -ErrorAction Stop
-    $ownerSearchBase = $ownerADDomain.DistinguishedName
+    Write-Host ("Walidacja grupy Owner: nazwa='{0}', ADServer='{1}'" -f $ownerGroupName, $ADServer) -ForegroundColor Cyan
 
-    Write-Host ("Walidacja grupy Owner: nazwa='{0}', domena='{1}', SearchBase='{2}', ADServer='{3}'" -f $ownerGroupName, $ownerADDomain.DNSRoot, $ownerSearchBase, $ADServer) -ForegroundColor Cyan
-
-    $escapedOwnerGroupName = ConvertTo-LdapFilterValue -Value $ownerGroupName
-    $ownerGroupLdapFilter = "(|(sAMAccountName=$escapedOwnerGroupName)(name=$escapedOwnerGroupName)(cn=$escapedOwnerGroupName))"
-
-    $ownerADGroups = @(Get-ADGroup -LDAPFilter $ownerGroupLdapFilter -SearchBase $ownerSearchBase -SearchScope Subtree -Server $ADServer -Properties sAMAccountName -ErrorAction Stop)
-
-    if ($ownerADGroups.Count -gt 1) {
-        $matches = ($ownerADGroups | ForEach-Object {
-            "{0} [sAMAccountName={1}; DN={2}]" -f $_.Name, $_.SamAccountName, $_.DistinguishedName
-        }) -join "; "
-
-        throw "Znaleziono więcej niż jedną grupę pasującą do '$ownerGroupName' w domenie '$($ownerADDomain.DNSRoot)': $matches"
-    }
-
-    $ownerADGroup = $ownerADGroups | Select-Object -First 1
+    $ownerADGroup = Get-ADGroup -Identity $ownerGroupName -Server $ADServer -Properties sAMAccountName -ErrorAction Stop
+}
+catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+    throw "Grupa Owner '$ownerGroupName' nie istnieje w Active Directory na '$ADServer'."
 }
 catch {
-    throw "Nie udało się zweryfikować grupy Owner '$ownerGroupName' w Active Directory przy użyciu '$ADServer'. Szczegóły: $($_.Exception.Message)"
+    throw "Nie udało się sprawdzić grupy Owner '$ownerGroupName' w Active Directory na '$ADServer'. Szczegóły: $($_.Exception.Message)"
 }
 
-if ($null -eq $ownerADGroup) {
-    throw "Grupa Owner '$ownerGroupName' nie istnieje w domenie '$($ownerADDomain.DNSRoot)' (SearchBase: '$ownerSearchBase', ADServer: '$ADServer'). Sprawdzono sAMAccountName, Name i CN."
-}
-
-Write-Host ("Zweryfikowano grupę AD Owner: {0}; sAMAccountName={1}; DN={2}; domena={3}" -f $ownerADGroup.Name, $ownerADGroup.SamAccountName, $ownerADGroup.DistinguishedName, $ownerADDomain.DNSRoot) -ForegroundColor Green
+Write-Host ("Zweryfikowano grupę AD Owner: {0}; sAMAccountName={1}; DN={2}; ADServer={3}" -f $ownerADGroup.Name, $ownerADGroup.SamAccountName, $ownerADGroup.DistinguishedName, $ADServer) -ForegroundColor Green
 
 $members = [System.Collections.Generic.List[object]]::new()
 $members.Add([PSCustomObject]@{
