@@ -568,6 +568,15 @@ try {
 
     $headers = @{ Authorization = $token }
 
+    Write-Host "Weryfikacja sesji CyberArk..." -ForegroundColor Cyan
+    try {
+        $verify = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Verify/" -Headers $headers -TimeoutSec 60
+        Write-Host "Sesja CyberArk jest prawidłowa." -ForegroundColor Green
+    }
+    catch {
+        throw "Logowanie zwróciło token, ale PVWA odrzuca go przy GET /api/Verify/. AuthType='$AuthType', PVWAURL='$PVWAURL'. Szczegóły: $($_.Exception.Message)"
+    }
+
     Write-Host "Sprawdzanie Safe '$SafeName'..." -ForegroundColor Cyan
     $safe = Get-SafeByName -Name $SafeName -Headers $headers
 
