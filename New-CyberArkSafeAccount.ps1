@@ -286,18 +286,26 @@ function Get-SafeByName {
         [Parameter(Mandatory)][hashtable]$Headers
     )
 
-    $safeId = [uri]::EscapeDataString($Name)
-
     try {
-        # PVWA wymaga kanonicznego URL szczegółów Safe z końcowym "/".
-        # Bez niego IIS/PVWA może wykonać redirect i zgubić Authorization.
-        return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId/" -Headers $Headers
+        $response = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes" -Headers $Headers
+
+        $safes = @()
+        if ($null -ne $response.value) {
+            $safes = @($response.value)
+        }
+        elseif ($response -is [System.Array]) {
+            $safes = @($response)
+        }
+        else {
+            $safes = @($response)
+        }
+
+        return $safes |
+            Where-Object { $_.safeName -eq $Name } |
+            Select-Object -First 1
     }
     catch {
-        if ((Get-HttpStatusCode $_.Exception) -eq 404) {
-            return $null
-        }
-        throw
+        throw "Nie udało się pobrać listy Safe z '$PVWAURL/api/Safes'. Szczegóły: $($_.Exception.Message)"
     }
 }
 
