@@ -393,6 +393,41 @@ function ConvertTo-PermissionObject {
     return $permissions
 }
 
+function Get-CyberArkAccountInSafe {
+    param(
+        [Parameter(Mandatory)][string]$SafeName,
+        [Parameter(Mandatory)][string]$UserName,
+        [Parameter(Mandatory)][string]$Address,
+        [Parameter(Mandatory)][string]$PlatformId,
+        [Parameter(Mandatory)][hashtable]$Headers
+    )
+
+    $safeFilter = [uri]::EscapeDataString("safeName eq $SafeName")
+    $uri = "$PVWAURL/api/Accounts?filter=$safeFilter"
+
+    $response = Invoke-CyberArkApi -Method Get -Uri $uri -Headers $Headers
+    $accounts = @()
+
+    if ($null -ne $response.value) {
+        $accounts = @($response.value)
+    }
+    elseif ($response -is [System.Array]) {
+        $accounts = @($response)
+    }
+    elseif ($null -ne $response) {
+        $accounts = @($response)
+    }
+
+    return $accounts |
+        Where-Object {
+            $_.safeName -eq $SafeName -and
+            $_.userName -eq $UserName -and
+            $_.address -eq $Address -and
+            $_.platformId -eq $PlatformId
+        } |
+        Select-Object -First 1
+}
+
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 $defaults = Get-ObjectProperty $config "defaults"
@@ -627,7 +662,207 @@ try {
     $safe = Get-SafeByName -Name $SafeName -Headers $headers
 
     if ($null -ne $safe -and -not $AllowExistingSafe) {
-        throw "Safe '$SafeName' już istnieje. Użyj -AllowExistingSafe, jeśli chcesz go wykorzystać."
+        Write-Warning "Safe '$SafeName' już istnieje."
+
+        $answer = Read-Host "Czy kontynuować i spróbować dodać konto do istniejącego Safe? [T/N]"
+        if ($answer -notmatch '^(?i:t|tak|y|yes)
+        $safeBody = [ordered]@{
+            safeName = $SafeName
+        }
+
+        foreach ($propertyName in @(
+            "description",
+            "location",
+            "managingCPM",
+            "olacEnabled",
+            "numberOfDaysRetention",
+            "numberOfVersionsRetention"
+        )) {
+            if (Test-ObjectProperty $config.safe $propertyName) {
+                $safeBody[$propertyName] = Expand-TemplateValue (Get-ObjectProperty $config.safe $propertyName)
+            }
+        }
+
+        if ($PSCmdlet.ShouldProcess("Safe '$SafeName'", "Utworzenie Safe")) {
+            Write-Host "Tworzenie Safe '$SafeName'..." -ForegroundColor Cyan
+            # Dla PVWA on-prem używamy kanonicznego endpointu z końcowym "/".
+            # Unika to redirectu /api/Safes -> /api/Safes/, przy którym PowerShell
+            # może nie przekazać nagłówka Authorization do kolejnego żądania.
+            $safe = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes/" -Headers $headers -Body $safeBody -TimeoutSec 300
+            Write-Host "Safe utworzony." -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "Safe już istnieje — kontynuuję zgodnie z -AllowExistingSafe." -ForegroundColor Yellow
+    }
+
+    $safeIdentifier = $SafeName
+    if ($null -ne $safe) {
+        $safeUrlId = [string](Get-ObjectProperty $safe "safeUrlId")
+        if (-not [string]::IsNullOrWhiteSpace($safeUrlId)) {
+            $safeIdentifier = $safeUrlId
+        }
+    }
+
+    foreach ($member in $members) {
+        $memberName = Expand-TemplateValue ([string](Get-ObjectProperty $member "name"))
+        $roleName = [string](Get-ObjectProperty $member "role")
+        $searchIn = [string](Get-ObjectProperty $member "searchIn")
+
+        if ([string]::IsNullOrWhiteSpace($searchIn)) {
+            $searchIn = "Vault"
+        }
+
+        $roleDefinition = $config.roles.PSObject.Properties[$roleName].Value
+        $permissions = ConvertTo-PermissionObject -RoleDefinition $roleDefinition
+
+        $memberBody = [ordered]@{
+            memberName  = $memberName
+            searchIn    = $searchIn
+            permissions = $permissions
+        }
+
+        if (Test-ObjectProperty $member "membershipExpirationDate") {
+            $memberBody.membershipExpirationDate = Get-ObjectProperty $member "membershipExpirationDate"
+        }
+
+        $existingMember = $null
+        if ($null -ne $safe -or $AllowExistingSafe) {
+            $existingMember = Get-SafeMember -SafeIdentifier $safeIdentifier -MemberName $memberName -Headers $headers
+        }
+
+        if ($null -eq $existingMember) {
+            if ($PSCmdlet.ShouldProcess("Safe '$SafeName' / '$memberName'", "Dodanie członka z rolą '$roleName'")) {
+                Write-Host "Dodawanie członka '$memberName' jako '$roleName'..." -ForegroundColor Cyan
+                $escapedSafe = [uri]::EscapeDataString($safeIdentifier)
+                Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes/$escapedSafe/Members" -Headers $headers -Body $memberBody | Out-Null
+            }
+        }
+        elseif ($UpdateExistingMembers) {
+            $updateBody = [ordered]@{
+                permissions = $permissions
+            }
+
+            if (Test-ObjectProperty $member "membershipExpirationDate") {
+                $updateBody.membershipExpirationDate = Get-ObjectProperty $member "membershipExpirationDate"
+            }
+
+            if ($PSCmdlet.ShouldProcess("Safe '$SafeName' / '$memberName'", "Aktualizacja uprawnień do roli '$roleName'")) {
+                Write-Host "Aktualizacja członka '$memberName' do roli '$roleName'..." -ForegroundColor Cyan
+                $escapedSafe = [uri]::EscapeDataString($safeIdentifier)
+                $escapedMember = [uri]::EscapeDataString($memberName)
+                Invoke-CyberArkApi -Method Put -Uri "$PVWAURL/api/Safes/$escapedSafe/Members/$escapedMember/" -Headers $headers -Body $updateBody | Out-Null
+            }
+        }
+        else {
+            throw "Członek '$memberName' już istnieje w Safe '$SafeName'. Użyj -UpdateExistingMembers, aby zaktualizować jego uprawnienia."
+        }
+    }
+
+    $accountAddress = Expand-TemplateValue ([string](Get-ObjectProperty $config.account "address"))
+    $accountPlatformId = [string](Get-ObjectProperty $config.account "platformId")
+    $accountTarget = "$AccountUserName@$accountAddress"
+    $createdAccount = $null
+
+    Write-Host "Sprawdzanie, czy konto '$accountTarget' już istnieje w Safe '$SafeName'..." -ForegroundColor Cyan
+    $existingAccount = Get-CyberArkAccountInSafe -SafeName $SafeName -UserName $AccountUserName -Address $accountAddress -PlatformId $accountPlatformId -Headers $headers
+
+    if ($null -ne $existingAccount) {
+        $existingAccountId = [string](Get-ObjectProperty $existingAccount "id")
+        Write-Warning ("Konto już istnieje w Safe '{0}': userName='{1}', address='{2}', platformId='{3}', id='{4}'" -f $SafeName, $AccountUserName, $accountAddress, $accountPlatformId, $existingAccountId)
+    }
+    elseif ($PSCmdlet.ShouldProcess("Konto '$accountTarget' w Safe '$SafeName'", "Dodanie konta do CyberArk")) {
+        if ($null -eq $AccountSecret) {
+            $AccountSecret = Read-Host "Podaj początkowy sekret konta '$accountTarget'" -AsSecureString
+        }
+
+        $plainSecret = ConvertFrom-SecureStringPlainText -SecureString $AccountSecret
+
+        try {
+            $secretType = [string](Get-ObjectProperty $config.account "secretType")
+            if ([string]::IsNullOrWhiteSpace($secretType)) {
+                $secretType = "password"
+            }
+
+            # Celowo bez pola "name". CyberArk generuje Object Name.
+            $accountBody = [ordered]@{
+                address    = $accountAddress
+                userName   = $AccountUserName
+                platformId = $accountPlatformId
+                safeName   = $SafeName
+                secretType = $secretType
+                secret     = $plainSecret
+            }
+
+            foreach ($propertyName in @(
+                "platformAccountProperties",
+                "secretManagement",
+                "remoteMachinesAccess"
+            )) {
+                if (Test-ObjectProperty $config.account $propertyName) {
+                    $accountBody[$propertyName] = Get-ObjectProperty $config.account $propertyName
+                }
+            }
+
+            Write-Host "Dodawanie konta '$accountTarget'..." -ForegroundColor Cyan
+            $createdAccount = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Accounts" -Headers $headers -Body $accountBody -TimeoutSec 300
+            Write-Host "Konto dodane." -ForegroundColor Green
+        }
+        finally {
+            $plainSecret = $null
+        }
+    }
+
+    if (-not $SkipReconcile -and $null -ne $createdAccount) {
+        $accountId = [string](Get-ObjectProperty $createdAccount "id")
+        if ([string]::IsNullOrWhiteSpace($accountId)) {
+            $accountId = [string](Get-ObjectProperty $createdAccount "Id")
+        }
+
+        if ([string]::IsNullOrWhiteSpace($accountId)) {
+            throw "Konto zostało utworzone, ale API nie zwróciło jego ID. Reconcile nie może zostać uruchomiony automatycznie."
+        }
+
+        if ($PSCmdlet.ShouldProcess("Konto '$accountTarget' (ID: $accountId)", "Uruchomienie Reconcile")) {
+            $escapedAccountId = [uri]::EscapeDataString($accountId)
+
+            Write-Host "Uruchamianie Reconcile..." -ForegroundColor Cyan
+            Invoke-CyberArkApi `
+                -Method Post `
+                -Uri "$PVWAURL/api/Accounts/$escapedAccountId/Reconcile" `
+                -Headers $headers `
+                -Body "{}" `
+                -TimeoutSec 300 | Out-Null
+
+            Write-Host "Reconcile został zlecony do CPM." -ForegroundColor Green
+        }
+    }
+    elseif ($SkipReconcile) {
+        Write-Host "Reconcile pominięty zgodnie z -SkipReconcile." -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "Operacja zakończona." -ForegroundColor Green
+    Write-Host ("Safe:        {0}" -f $SafeName)
+    Write-Host ("Owner group: {0}" -f $ownerGroupName)
+    Write-Host ("Konto:       {0}" -f $accountTarget)
+}
+finally {
+    if ($headers -and $token) {
+        try {
+            Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Auth/Logoff" -Headers $headers -TimeoutSec 60 | Out-Null
+        }
+        catch {
+            Write-Warning ("Nie udało się wylogować sesji CyberArk: " + $_.Exception.Message)
+        }
+    }
+}
+) {
+            Write-Host "Operacja przerwana przez użytkownika." -ForegroundColor Yellow
+            return
+        }
+
+        $AllowExistingSafe = $true
     }
 
     if ($null -eq $safe) {
