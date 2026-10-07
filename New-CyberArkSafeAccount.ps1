@@ -579,7 +579,10 @@ try {
 
         if ($PSCmdlet.ShouldProcess("Safe '$SafeName'", "Utworzenie Safe")) {
             Write-Host "Tworzenie Safe '$SafeName'..." -ForegroundColor Cyan
-            $safe = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes" -Headers $headers -Body $safeBody -TimeoutSec 300
+            # Dla PVWA on-prem używamy kanonicznego endpointu z końcowym "/".
+            # Unika to redirectu /api/Safes -> /api/Safes/, przy którym PowerShell
+            # może nie przekazać nagłówka Authorization do kolejnego żądania.
+            $safe = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes/" -Headers $headers -Body $safeBody -TimeoutSec 300
             Write-Host "Safe utworzony." -ForegroundColor Green
         }
     }
