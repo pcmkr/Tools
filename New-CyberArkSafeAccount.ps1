@@ -55,9 +55,14 @@
       4. interaktywny prompt SecureString.
 
 .PARAMETER ADServer
-    Opcjonalna domena DNS albo konkretny kontroler domeny używany do walidacji
-    grupy Owner w Active Directory. Jeśli parametr nie zostanie podany,
-    używany jest domyślny kontekst domenowy bieżącej stacji.
+    Domena DNS albo konkretny kontroler domeny używany do walidacji grupy Owner
+    w Active Directory. Kolejność wyboru:
+      1. parametr -ADServer,
+      2. owner.adServer w JSON,
+      3. defaults.adServer w JSON.
+
+    owner.searchIn NIE określa domeny dla Get-ADGroup; jest to wartość searchIn
+    przekazywana do CyberArk przy dodawaniu członka Safe.
 
 .PARAMETER AllowExistingSafe
     Pozwala użyć istniejącego Safe.
@@ -372,6 +377,9 @@ if ([string]::IsNullOrWhiteSpace($AccountUserName)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($ADServer)) {
+    $ADServer = [string](Get-ObjectProperty $config.owner "adServer")
+}
+if ([string]::IsNullOrWhiteSpace($ADServer)) {
     $ADServer = [string](Get-ObjectProperty $defaults "adServer")
 }
 
@@ -433,8 +441,16 @@ if ([string]::IsNullOrWhiteSpace($ownerSearchIn)) {
 
 $ownerGroupName = $SafeName + $ownerGroupSuffix
 
+# owner.searchIn to nazwa katalogu/domeny widoczna dla CyberArk.
+# Nie jest używana do zapytań Active Directory. Do walidacji AD służy
+# -ADServer / owner.adServer / defaults.adServer (w tej kolejności).
+#
 # Walidacja grupy Owner odbywa się przed logowaniem do CyberArk i przed
 # wykonaniem jakichkolwiek zmian po stronie Vault/PVWA.
+if ([string]::IsNullOrWhiteSpace($ADServer)) {
+    throw "Nie wskazano domeny/kontrolera AD do walidacji grupy Owner. Ustaw -ADServer, owner.adServer albo defaults.adServer."
+}
+
 try {
     Import-Module ActiveDirectory -ErrorAction Stop
 }
@@ -443,28 +459,33 @@ catch {
 }
 
 $adParameters = @{
+    Server      = $ADServer
     ErrorAction = "Stop"
 }
 
-if (-not [string]::IsNullOrWhiteSpace($ADServer)) {
-    $adParameters.Server = $ADServer
-}
-
 try {
-    $escapedOwnerGroupName = $ownerGroupName.Replace("'", "''")
-    $ownerADGroup = Get-ADGroup -Filter "SamAccountName -eq '$escapedOwnerGroupName' -or Name -eq '$escapedOwnerGroupName'" @adParameters |
-        Select-Object -First 1
+    # Najpierw próbujemy po sAMAccountName, ponieważ grupa Owner jest wyliczana
+    # z nazwy Safe i w praktyce jest używana jako identyfikator logowania grupy.
+    # -Identity jest mniej podatne na problemy z quotingiem filtra LDAP/AD.
+    try {
+        $ownerADGroup = Get-ADGroup -Identity $ownerGroupName @adParameters
+    }
+    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+        # Fallback dla środowisk, w których Name różni się od sAMAccountName.
+        $escapedOwnerGroupName = $ownerGroupName.Replace("'", "''")
+        $ownerADGroup = Get-ADGroup -Filter "Name -eq '$escapedOwnerGroupName'" @adParameters |
+            Select-Object -First 1
+    }
 }
 catch {
-    throw "Nie udało się zweryfikować grupy Owner '$ownerGroupName' w Active Directory. Szczegóły: $($_.Exception.Message)"
+    throw "Nie udało się zweryfikować grupy Owner '$ownerGroupName' w Active Directory na serwerze/domenie '$ADServer'. Szczegóły: $($_.Exception.Message)"
 }
 
 if ($null -eq $ownerADGroup) {
-    $serverText = if ($ADServer) { " na '$ADServer'" } else { "" }
-    throw "Grupa Owner '$ownerGroupName' nie istnieje w Active Directory$serverText. Skrypt przerwany przed wykonaniem zmian w CyberArk."
+    throw "Grupa Owner '$ownerGroupName' nie istnieje w Active Directory na serwerze/domenie '$ADServer'. Skrypt przerwany przed wykonaniem zmian w CyberArk."
 }
 
-Write-Host ("Zweryfikowano grupę AD Owner: {0} ({1})" -f $ownerADGroup.Name, $ownerADGroup.DistinguishedName) -ForegroundColor Green
+Write-Host ("Zweryfikowano grupę AD Owner: {0} ({1}); AD server/domain: {2}" -f $ownerADGroup.Name, $ownerADGroup.DistinguishedName, $ADServer) -ForegroundColor Green
 
 $members = [System.Collections.Generic.List[object]]::new()
 $members.Add([PSCustomObject]@{
