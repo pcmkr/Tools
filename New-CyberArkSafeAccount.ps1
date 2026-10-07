@@ -289,7 +289,9 @@ function Get-SafeByName {
     $safeId = [uri]::EscapeDataString($Name)
 
     try {
-        return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId" -Headers $Headers
+        # PVWA wymaga kanonicznego URL szczegółów Safe z końcowym "/".
+        # Bez niego IIS/PVWA może wykonać redirect i zgubić Authorization.
+        return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId/" -Headers $Headers
     }
     catch {
         if ((Get-HttpStatusCode $_.Exception) -eq 404) {
@@ -310,7 +312,7 @@ function Get-SafeMember {
     $memberId = [uri]::EscapeDataString($MemberName)
 
     try {
-        return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId/Members/$memberId" -Headers $Headers
+        return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId/Members/$memberId/" -Headers $Headers
     }
     catch {
         if ((Get-HttpStatusCode $_.Exception) -eq 404) {
@@ -670,7 +672,7 @@ try {
                 Write-Host "Aktualizacja członka '$memberName' do roli '$roleName'..." -ForegroundColor Cyan
                 $escapedSafe = [uri]::EscapeDataString($safeIdentifier)
                 $escapedMember = [uri]::EscapeDataString($memberName)
-                Invoke-CyberArkApi -Method Put -Uri "$PVWAURL/api/Safes/$escapedSafe/Members/$escapedMember" -Headers $headers -Body $updateBody | Out-Null
+                Invoke-CyberArkApi -Method Put -Uri "$PVWAURL/api/Safes/$escapedSafe/Members/$escapedMember/" -Headers $headers -Body $updateBody | Out-Null
             }
         }
         else {
