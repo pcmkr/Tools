@@ -512,7 +512,7 @@ $token = $null
 $headers = $null
 
 try {
-    Write-Host "Logowanie do CyberArk PAM..." -ForegroundColor Cyan
+    Write-Host ("Logowanie do CyberArk PAM... AuthType={0}; URL={1}/api/Auth/{0}/Logon" -f $AuthType, $PVWAURL) -ForegroundColor Cyan
 
     $logonBody = @{
         username          = $Credential.UserName
@@ -520,11 +520,22 @@ try {
         concurrentSession = $true
     }
 
-    $token = Invoke-CyberArkApi `
+    $logonResponse = Invoke-CyberArkApi `
         -Method Post `
         -Uri "$PVWAURL/api/Auth/$AuthType/Logon" `
         -Body $logonBody `
         -TimeoutSec 120
+
+    Write-Host ("Typ odpowiedzi logowania: {0}" -f $logonResponse.GetType().FullName) -ForegroundColor DarkGray
+
+    if ($logonResponse -isnot [string]) {
+        $responseProperties = @($logonResponse.PSObject.Properties.Name)
+        if ($responseProperties.Count -gt 0) {
+            Write-Host ("Pola odpowiedzi logowania: {0}" -f ($responseProperties -join ", ")) -ForegroundColor DarkGray
+        }
+    }
+
+    $token = $logonResponse
 
     if ($token -isnot [string]) {
         foreach ($propertyName in @("CyberArkLogonResult", "token", "Token")) {
@@ -540,9 +551,14 @@ try {
         throw "CyberArk zwrócił pusty token logowania."
     }
 
-    # PVWA może zwrócić token jako JSON string, np. "token".
-    # Authorization musi zawierać sam token, bez cudzysłowów i białych znaków.
-    $token = ([string]$token).Trim().Trim('"')
+    # Invoke-RestMethod deserializuje prawidłową odpowiedź Logon do stringa.
+    # Usuwamy wyłącznie białe znaki; nie próbujemy "naprawiać" dowolnej
+    # odpowiedzi obiektowej przez rzutowanie jej na tekst.
+    if ($token -isnot [string]) {
+        throw "Odpowiedź logowania nie zawiera rozpoznanego tokenu sesji. AuthType='$AuthType'. Typ odpowiedzi: $($logonResponse.GetType().FullName)."
+    }
+
+    $token = $token.Trim()
 
     if ([string]::IsNullOrWhiteSpace($token)) {
         throw "CyberArk zwrócił pusty token po normalizacji odpowiedzi logowania."
