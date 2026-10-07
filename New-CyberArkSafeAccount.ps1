@@ -664,8 +664,16 @@ try {
     if ($null -ne $safe -and -not $AllowExistingSafe) {
         Write-Warning "Safe '$SafeName' już istnieje."
 
-        $answer = Read-Host "Czy kontynuować i spróbować dodać konto do istniejącego Safe? [T/N]"
-        if ($answer -notmatch '^(?i:t|tak|y|yes)
+        $answer = Read-Host "Kontynuować dodawanie konta do istniejącego Safe? [y/n]"
+        if ($answer -ne "y") {
+            Write-Host "Operacja przerwana przez użytkownika." -ForegroundColor Yellow
+            return
+        }
+
+        $AllowExistingSafe = $true
+    }
+
+    if ($null -eq $safe) {
         $safeBody = [ordered]@{
             safeName = $SafeName
         }
