@@ -322,26 +322,25 @@ function Get-SafeByName {
         [Parameter(Mandatory)][hashtable]$Headers
     )
 
+    $safeId = [uri]::EscapeDataString($Name)
+    $uri = "$PVWAURL/api/Safes/$safeId/"
+
     try {
-        $response = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes" -Headers $Headers
-
-        $safes = @()
-        if ($null -ne $response.value) {
-            $safes = @($response.value)
-        }
-        elseif ($response -is [System.Array]) {
-            $safes = @($response)
-        }
-        else {
-            $safes = @($response)
-        }
-
-        return $safes |
-            Where-Object { $_.safeName -eq $Name } |
-            Select-Object -First 1
+        return Invoke-RestMethod -Method Get -Uri $uri -Headers $Headers -ContentType "application/json" -TimeoutSec 60 -ErrorAction Stop
     }
     catch {
-        throw "Nie udało się pobrać listy Safe z '$PVWAURL/api/Safes'. Szczegóły: $($_.Exception.Message)"
+        $statusCode = Get-HttpStatusCode $_.Exception
+
+        if ($statusCode -eq 404) {
+            return $null
+        }
+
+        $details = [string]$_.ErrorDetails.Message
+        if ([string]::IsNullOrWhiteSpace($details)) {
+            $details = $_.Exception.Message
+        }
+
+        throw "Nie udało się sprawdzić Safe '$Name' pod '$uri'. HTTP=$statusCode. Szczegóły: $details"
     }
 }
 
