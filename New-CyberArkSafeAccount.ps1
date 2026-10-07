@@ -540,7 +540,17 @@ try {
         throw "CyberArk zwrócił pusty token logowania."
     }
 
-    $headers = @{ Authorization = [string]$token }
+    # PVWA może zwrócić token jako JSON string, np. "token".
+    # Authorization musi zawierać sam token, bez cudzysłowów i białych znaków.
+    $token = ([string]$token).Trim().Trim('"')
+
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "CyberArk zwrócił pusty token po normalizacji odpowiedzi logowania."
+    }
+
+    Write-Host ("Logowanie zakończone. Otrzymano token sesji (długość: {0})." -f $token.Length) -ForegroundColor Green
+
+    $headers = @{ Authorization = $token }
 
     Write-Host "Sprawdzanie Safe '$SafeName'..." -ForegroundColor Cyan
     $safe = Get-SafeByName -Name $SafeName -Headers $headers
