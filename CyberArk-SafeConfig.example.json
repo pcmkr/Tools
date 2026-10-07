@@ -9,7 +9,8 @@
   "owner": {
     "role": "Owner",
     "groupSuffix": "_owner",
-    "searchIn": "CORP"
+    "searchIn": "CORP",
+    "adServer": "corp.example.com"
   },
   "roles": {
     "Owner": {
