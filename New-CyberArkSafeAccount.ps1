@@ -262,6 +262,7 @@ function Invoke-CyberArkApi {
         Uri         = $Uri
         ContentType = "application/json"
         TimeoutSec  = $TimeoutSec
+        ErrorAction = "Stop"
     }
 
     if ($null -ne $Headers) {
@@ -277,7 +278,42 @@ function Invoke-CyberArkApi {
         }
     }
 
-    return Invoke-RestMethod @parameters
+    try {
+        return Invoke-RestMethod @parameters
+    }
+    catch {
+        $statusCode = Get-HttpStatusCode $_.Exception
+        $errorCode = $null
+        $errorMessage = $null
+        $rawDetails = [string]$_.ErrorDetails.Message
+
+        if (-not [string]::IsNullOrWhiteSpace($rawDetails)) {
+            try {
+                $details = $rawDetails | ConvertFrom-Json
+                $errorCode = [string](Get-ObjectProperty $details "ErrorCode")
+                $errorMessage = [string](Get-ObjectProperty $details "ErrorMessage")
+            }
+            catch {
+                # Odpowiedź nie była JSON-em; zachowujemy surową treść.
+            }
+        }
+
+        $message = "CyberArk REST error: Method='$Method'; Uri='$Uri'"
+        if ($null -ne $statusCode) {
+            $message += "; HTTP=$statusCode"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($errorCode)) {
+            $message += "; ErrorCode='$errorCode'"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($errorMessage)) {
+            $message += "; ErrorMessage='$errorMessage'"
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($rawDetails)) {
+            $message += "; Response='$rawDetails'"
+        }
+
+        throw $message
+    }
 }
 
 function Get-SafeByName {
