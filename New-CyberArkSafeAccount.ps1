@@ -458,34 +458,47 @@ catch {
     throw "Nie można załadować modułu ActiveDirectory. Zainstaluj RSAT Active Directory PowerShell. Szczegóły: $($_.Exception.Message)"
 }
 
-$adParameters = @{
-    Server      = $ADServer
-    ErrorAction = "Stop"
+function ConvertTo-LdapFilterValue {
+    param([Parameter(Mandatory)][string]$Value)
+
+    return $Value.
+        Replace("\", "\5c").
+        Replace("*", "\2a").
+        Replace("(", "\28").
+        Replace(")", "\29").
+        Replace([char]0, "\00")
 }
 
 try {
-    # Najpierw próbujemy po sAMAccountName, ponieważ grupa Owner jest wyliczana
-    # z nazwy Safe i w praktyce jest używana jako identyfikator logowania grupy.
-    # -Identity jest mniej podatne na problemy z quotingiem filtra LDAP/AD.
-    try {
-        $ownerADGroup = Get-ADGroup -Identity $ownerGroupName @adParameters
+    $ownerADDomain = Get-ADDomain -Identity $ADServer -Server $ADServer -ErrorAction Stop
+    $ownerSearchBase = $ownerADDomain.DistinguishedName
+
+    Write-Host ("Walidacja grupy Owner: nazwa='{0}', domena='{1}', SearchBase='{2}', ADServer='{3}'" -f $ownerGroupName, $ownerADDomain.DNSRoot, $ownerSearchBase, $ADServer) -ForegroundColor Cyan
+
+    $escapedOwnerGroupName = ConvertTo-LdapFilterValue -Value $ownerGroupName
+    $ownerGroupLdapFilter = "(|(sAMAccountName=$escapedOwnerGroupName)(name=$escapedOwnerGroupName)(cn=$escapedOwnerGroupName))"
+
+    $ownerADGroups = @(Get-ADGroup -LDAPFilter $ownerGroupLdapFilter -SearchBase $ownerSearchBase -SearchScope Subtree -Server $ADServer -Properties sAMAccountName -ErrorAction Stop)
+
+    if ($ownerADGroups.Count -gt 1) {
+        $matches = ($ownerADGroups | ForEach-Object {
+            "{0} [sAMAccountName={1}; DN={2}]" -f $_.Name, $_.SamAccountName, $_.DistinguishedName
+        }) -join "; "
+
+        throw "Znaleziono więcej niż jedną grupę pasującą do '$ownerGroupName' w domenie '$($ownerADDomain.DNSRoot)': $matches"
     }
-    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
-        # Fallback dla środowisk, w których Name różni się od sAMAccountName.
-        $escapedOwnerGroupName = $ownerGroupName.Replace("'", "''")
-        $ownerADGroup = Get-ADGroup -Filter "Name -eq '$escapedOwnerGroupName'" @adParameters |
-            Select-Object -First 1
-    }
+
+    $ownerADGroup = $ownerADGroups | Select-Object -First 1
 }
 catch {
-    throw "Nie udało się zweryfikować grupy Owner '$ownerGroupName' w Active Directory na serwerze/domenie '$ADServer'. Szczegóły: $($_.Exception.Message)"
+    throw "Nie udało się zweryfikować grupy Owner '$ownerGroupName' w Active Directory przy użyciu '$ADServer'. Szczegóły: $($_.Exception.Message)"
 }
 
 if ($null -eq $ownerADGroup) {
-    throw "Grupa Owner '$ownerGroupName' nie istnieje w Active Directory na serwerze/domenie '$ADServer'. Skrypt przerwany przed wykonaniem zmian w CyberArk."
+    throw "Grupa Owner '$ownerGroupName' nie istnieje w domenie '$($ownerADDomain.DNSRoot)' (SearchBase: '$ownerSearchBase', ADServer: '$ADServer'). Sprawdzono sAMAccountName, Name i CN."
 }
 
-Write-Host ("Zweryfikowano grupę AD Owner: {0} ({1}); AD server/domain: {2}" -f $ownerADGroup.Name, $ownerADGroup.DistinguishedName, $ADServer) -ForegroundColor Green
+Write-Host ("Zweryfikowano grupę AD Owner: {0}; sAMAccountName={1}; DN={2}; domena={3}" -f $ownerADGroup.Name, $ownerADGroup.SamAccountName, $ownerADGroup.DistinguishedName, $ownerADDomain.DNSRoot) -ForegroundColor Green
 
 $members = [System.Collections.Generic.List[object]]::new()
 $members.Add([PSCustomObject]@{
