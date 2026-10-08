@@ -70,9 +70,13 @@ if ($null -ne $PlatformAccountProperties) {
     }
 }
 if ($OSType -eq 'Windows') {
-    # Local Windows account: LogonTo must always match account.address.
-    # Set last so custom properties cannot override this requirement.
-    $newProperties['LogonTo'] = $Address
+    # PVWA field "Logon To" maps to platform property "LogonDomain".
+    # The value must equal account.address for local Windows accounts.
+    # Remove the invalid legacy key even if supplied by the caller.
+    if ($newProperties.Contains('LogonTo')) {
+        $newProperties.Remove('LogonTo')
+    }
+    $newProperties['LogonDomain'] = $Address
 }
 $config.account.platformAccountProperties = [pscustomobject]$newProperties
 
