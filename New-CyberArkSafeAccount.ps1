@@ -365,7 +365,13 @@ function Get-SafeMember {
         if ($null -ne $response.value) {
             $items = @($response.value)
         }
+        elseif ($null -ne (Get-ObjectProperty $response 'members')) {
+            $items = @($response.members)
+        }
         elseif ($response -is [array]) {
+            $items = @($response)
+        }
+        elseif ($null -ne (Get-ObjectProperty $response 'memberName')) {
             $items = @($response)
         }
         foreach ($item in $items) {
@@ -762,7 +768,24 @@ try {
             if ($PSCmdlet.ShouldProcess("Safe '$SafeName' / '$memberName'", "Dodanie członka z rolą '$roleName'")) {
                 Write-Host "Dodawanie członka '$memberName' jako '$roleName'..." -ForegroundColor Cyan
                 $escapedSafe = [uri]::EscapeDataString($safeIdentifier)
-                Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes/$escapedSafe/Members" -Headers $headers -Body $memberBody | Out-Null
+                try {
+                    Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/Safes/$escapedSafe/Members" -Headers $headers -Body $memberBody | Out-Null
+                }
+                catch {
+                    # Ostateczne zabezpieczenie: Vault moze zwrocic juz-istniejacego
+                    # czlonka mimo ze zapytanie GET go nie wykazalo.
+                    # Nie maskujemy innych bledow ani duplikatow innych nazw.
+                    $apiError = [string]$_.Exception.Message
+                    $escapedMemberPattern = [regex]::Escape($memberName)
+                    if ($apiError -match "ErrorCode='(?:SFWS0012|SWFS0012)'" -and
+                        $apiError -match $escapedMemberPattern -and
+                        $apiError -match '(?i)already.*member|member.*already') {
+                        Write-Warning ("Czlonek '{0}' jest juz w Safe '{1}' - pomijam dodawanie." -f $memberName, $SafeName)
+                    }
+                    else {
+                        throw
+                    }
+                }
             }
         }
         elseif ($UpdateExistingMembers) {
@@ -782,7 +805,7 @@ try {
             }
         }
         else {
-            throw "Członek '$memberName' już istnieje w Safe '$SafeName'. Użyj -UpdateExistingMembers, aby zaktualizować jego uprawnienia."
+            Write-Host ("Czlonek '{0}' juz istnieje w Safe '{1}' - bez zmiany uprawnien." -f $memberName, $SafeName) -ForegroundColor DarkGray
         }
     }
 
