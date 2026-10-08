@@ -10,13 +10,13 @@
     i sekret mogą pochodzić z parametrów albo z sekcji defaults w konfiguracji.
     Parametry przekazane w CLI mają pierwszeństwo przed wartościami z JSON.
 
-    Dla każdego Safe automatycznie wyliczana jest grupa właścicieli:
-        <SafeName><ownerGroupSuffix>
+    Dla sejfu generowane sa grupy z safeMembers.groupSuffix:
+        <SafeName><groupSuffix>
 
     Domyślnie daje to np.:
         APP-PRD-SQL01_owner
 
-    Grupa jest dodawana do Safe z uprawnieniami roli Owner z pliku JSON.
+    Wszystkie wpisy safeMembers sa przypisywane do Safe wedlug roles.
 
     Pole CyberArk Account "name" (Object Name) nie jest wysyłane do API.
     CyberArk generuje nazwę obiektu konta zgodnie z własnym mechanizmem.
@@ -37,7 +37,7 @@
         $PSScriptRoot\CyberArk-SafeConfig.json
 
     Plik definiuje wartości domyślne, właściwości Safe, typ konta, role,
-    stałych członków oraz sposób tworzenia grupy Owner.
+    czlonkow sejfu w pojedynczej sekcji safeMembers.
 
 .PARAMETER AuthType
     Metoda logowania: CyberArk, LDAP albo Radius.
@@ -55,14 +55,8 @@
       4. interaktywny prompt SecureString.
 
 .PARAMETER ADServer
-    Domena DNS albo konkretny kontroler domeny używany do walidacji grupy Owner
-    w Active Directory. Kolejność wyboru:
-      1. parametr -ADServer,
-      2. owner.adServer w JSON,
-      3. defaults.adServer w JSON.
-
-    owner.searchIn NIE określa domeny dla Get-ADGroup; jest to wartość searchIn
-    przekazywana do CyberArk przy dodawaniu członka Safe.
+    Kontroler AD do walidacji safeMembers (gdy wpis nie zawiera adServer).
+    Wartosci: parametr -ADServer, nastepnie defaults.adServer.
 
 .PARAMETER AllowExistingSafe
     Pozwala użyć istniejącego Safe.
@@ -483,7 +477,6 @@ if ([string]::IsNullOrWhiteSpace($AccountUserName)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($ADServer)) {
-    $ADServer = [string](Get-ObjectProperty $config.owner "adServer")
 }
 if ([string]::IsNullOrWhiteSpace($ADServer)) {
     $ADServer = [string](Get-ObjectProperty $defaults "adServer")
@@ -508,7 +501,7 @@ if ($null -eq $AccountSecret) {
     }
 }
 
-foreach ($requiredSection in @("safe", "owner", "roles", "account")) {
+foreach ($requiredSection in @("safe", "roles", "account", "safeMembers")) {
     if (-not (Test-ObjectProperty $config $requiredSection)) {
         throw "W pliku konfiguracyjnym brakuje sekcji '$requiredSection'."
     }
@@ -526,78 +519,48 @@ foreach ($requiredAccountProperty in @("address", "platformId")) {
     }
 }
 
-# Backward-compatible role groups. "owner" keeps the old configuration,
-# while "roleGroups" defines any number of additional AD groups.
+foreach ($legacySection in @("owner", "members", "roleGroups")) {
+    if (Test-ObjectProperty $config $legacySection) { throw "Usun przestarzala sekcje $legacySection. Uzyj safeMembers." }
+}
 $members = [System.Collections.Generic.List[object]]::new()
-$roleGroups = [System.Collections.Generic.List[object]]::new()
-
-$ownerRoleName = [string](Get-ObjectProperty $config.owner "role")
-if ([string]::IsNullOrWhiteSpace($ownerRoleName)) { $ownerRoleName = 'Owner' }
-$ownerGroupSuffix = [string](Get-ObjectProperty $config.owner "groupSuffix")
-if ([string]::IsNullOrWhiteSpace($ownerGroupSuffix)) { $ownerGroupSuffix = '_owner' }
-$ownerSearchIn = [string](Get-ObjectProperty $config.owner "searchIn")
-if ([string]::IsNullOrWhiteSpace($ownerSearchIn)) { throw 'owner.searchIn jest wymagane.' }
-$ownerGroupName = $SafeName + $ownerGroupSuffix
-
-$roleGroups.Add([pscustomobject]@{
-    name = $ownerGroupName
-    role = $ownerRoleName
-    searchIn = $ownerSearchIn
-    adServer = $ADServer
-})
-
-if (Test-ObjectProperty $config 'roleGroups') {
-    foreach ($entry in @($config.roleGroups)) {
-        $role = [string](Get-ObjectProperty $entry 'role')
-        $suffix = [string](Get-ObjectProperty $entry 'groupSuffix')
-        $searchIn = [string](Get-ObjectProperty $entry 'searchIn')
-        $server = [string](Get-ObjectProperty $entry 'adServer')
-        if ([string]::IsNullOrWhiteSpace($role) -or [string]::IsNullOrWhiteSpace($suffix)) {
-            throw 'Kazdy element roleGroups wymaga role i groupSuffix.'
-        }
-        if ([string]::IsNullOrWhiteSpace($searchIn)) { $searchIn = $ownerSearchIn }
-        if ([string]::IsNullOrWhiteSpace($server)) { $server = $ADServer }
-        $roleGroups.Add([pscustomobject]@{
-            name = $SafeName + $suffix
-            role = $role
-            searchIn = $searchIn
-            adServer = $server
-        })
+$seenMembers = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+if (-not (Test-ObjectProperty $config "safeMembers")) { throw "Wymagana sekcja safeMembers." }
+if (@($config.safeMembers).Count -eq 0) { throw "safeMembers nie moze byc puste." }
+foreach ($entry in @($config.safeMembers)) {
+    $name = [string](Get-ObjectProperty $entry "name")
+    $suffix = [string](Get-ObjectProperty $entry "groupSuffix")
+    $role = [string](Get-ObjectProperty $entry "role")
+    $searchIn = [string](Get-ObjectProperty $entry "searchIn")
+    if ((-not [string]::IsNullOrWhiteSpace($name)) -eq (-not [string]::IsNullOrWhiteSpace($suffix))) {
+        throw "safeMembers: podaj dokladnie jedno z name albo groupSuffix."
     }
-}
-
-$seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-foreach ($group in $roleGroups) {
-    if (-not $seen.Add([string]$group.name)) {
-        throw "Powtorzona nazwa grupy w owner/roleGroups: '$($group.name)'."
+    if ($suffix) { $name = $SafeName + $suffix }
+    if ([string]::IsNullOrWhiteSpace($role) -or [string]::IsNullOrWhiteSpace($searchIn)) {
+        throw "safeMembers: role i searchIn sa wymagane dla $name."
     }
-    if ($null -eq $config.roles.PSObject.Properties[[string]$group.role]) {
-        throw "Brak definicji roli '$($group.role)' dla grupy '$($group.name)'."
+    if (-not $seenMembers.Add($name)) { throw "Powtorzony czlonek sejfu: $name." }
+    if ($null -eq $config.roles.PSObject.Properties[$role]) { throw "Nieznana rola $role dla $name." }
+    $validate = [bool](-not [string]::IsNullOrWhiteSpace($suffix))
+    if (Test-ObjectProperty $entry "validateAD") {
+        $v = Get-ObjectProperty $entry "validateAD"
+        if ($v -isnot [bool]) { throw "validateAD musi byc bool dla $name." }
+        $validate = $v
     }
-    if ([string]::IsNullOrWhiteSpace([string]$group.adServer)) {
-        throw "Brak ADServer dla grupy '$($group.name)'."
+    $server = [string](Get-ObjectProperty $entry "adServer")
+    if ([string]::IsNullOrWhiteSpace($server)) { $server = $ADServer }
+    if ($validate) {
+        if (-not $server) { throw "Brak ADServer dla $name." }
+        if (-not (Get-Module ActiveDirectory)) { Import-Module ActiveDirectory -ErrorAction Stop }
+        try {
+            $adGroup = Get-ADGroup -Identity $name -Server $server -ErrorAction Stop
+            Write-Host ("Grupa AD OK: {0}" -f $adGroup.Name) -ForegroundColor Green
+        } catch { throw "Grupa AD $name nie zostala zweryfikowana: $($_.Exception.Message)" }
     }
-}
-try { Import-Module ActiveDirectory -ErrorAction Stop }
-catch { throw "Nie mozna zaladowac modulu ActiveDirectory: $($_.Exception.Message)" }
-
-# Validate all role groups before starting any Vault mutations.
-foreach ($group in $roleGroups) {
-    try {
-        $adGroup = Get-ADGroup -Identity $group.name -Server $group.adServer -Properties sAMAccountName -ErrorAction Stop
+    $memberRecord = [ordered]@{ name=$name; role=$role; searchIn=$searchIn }
+    if (Test-ObjectProperty $entry "membershipExpirationDate") {
+        $memberRecord.membershipExpirationDate = Get-ObjectProperty $entry "membershipExpirationDate"
     }
-    catch {
-        throw "Nie mozna zweryfikowac grupy '$($group.name)' w AD '$($group.adServer)': $($_.Exception.Message)"
-    }
-    Write-Host ("AD OK: grupa '{0}', rola '{1}', sAMAccountName '{2}'" -f $group.name, $group.role, $adGroup.SamAccountName) -ForegroundColor Green
-    $members.Add([pscustomobject]@{
-        name = $group.name
-        role = $group.role
-        searchIn = $group.searchIn
-    })
-}
-if (Test-ObjectProperty $config 'members') {
-    foreach ($member in @($config.members)) { $members.Add($member) }
+    $members.Add([pscustomobject]$memberRecord)
 }
 
 foreach ($member in $members) {
@@ -903,9 +866,9 @@ try {
     Write-Host ""
     Write-Host "Operacja zakończona." -ForegroundColor Green
     Write-Host ("Safe:        {0}" -f $SafeName)
-    Write-Host "Grupy ról (owner i roleGroups):"
-    foreach ($group in $roleGroups) {
-        Write-Host ("  {0,-18} {1}" -f ([string]$group.role + ':'), [string]$group.name)
+    Write-Host "Czlonkowie Safe / role:"
+    foreach ($member in $members) {
+        Write-Host ("  {0,-18} {1}" -f ([string]$member.role + ':'), [string]$member.name)
     }
     Write-Host ("Konto:       {0}" -f $accountTarget)
 }
