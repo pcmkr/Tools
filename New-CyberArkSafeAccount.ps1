@@ -358,7 +358,14 @@ function Get-SafeMember {
         return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId/Members/$memberId/" -Headers $Headers
     }
     catch {
-        if ((Get-HttpStatusCode $_.Exception) -eq 404) {
+        # Invoke-CyberArkApi rzuca tekstowy wyjatek, przez co oryginalny
+        # HTTP StatusCode nie jest juz dostepny w Exception.Response.
+        # SWS0008 oznacza, ze wskazany czlonek nie zostal odnaleziony
+        # w Safe. To prawidlowy wynik podczas tworzenia nowego Safe.
+        $errorText = [string]$_.Exception.Message
+        if ($errorText -match "ErrorCode='SWS0008'" -and
+            $errorText -match 'Owner was not found in safe|was not found in safe') {
+            Write-Verbose ("Czlonek '{0}' nie istnieje w Safe '{1}' - zostanie dodany." -f $MemberName, $SafeIdentifier)
             return $null
         }
         throw
