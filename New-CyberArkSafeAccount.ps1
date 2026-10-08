@@ -477,8 +477,6 @@ if ([string]::IsNullOrWhiteSpace($AccountUserName)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($ADServer)) {
-}
-if ([string]::IsNullOrWhiteSpace($ADServer)) {
     $ADServer = [string](Get-ObjectProperty $defaults "adServer")
 }
 
