@@ -526,69 +526,78 @@ foreach ($requiredAccountProperty in @("address", "platformId")) {
     }
 }
 
+# Backward-compatible role groups. "owner" keeps the old configuration,
+# while "roleGroups" defines any number of additional AD groups.
+$members = [System.Collections.Generic.List[object]]::new()
+$roleGroups = [System.Collections.Generic.List[object]]::new()
+
 $ownerRoleName = [string](Get-ObjectProperty $config.owner "role")
-if ([string]::IsNullOrWhiteSpace($ownerRoleName)) {
-    $ownerRoleName = "Owner"
-}
-
-if ($null -eq $config.roles.PSObject.Properties[$ownerRoleName]) {
-    throw "Brak definicji roli Owner '$ownerRoleName' w sekcji roles."
-}
-
+if ([string]::IsNullOrWhiteSpace($ownerRoleName)) { $ownerRoleName = 'Owner' }
 $ownerGroupSuffix = [string](Get-ObjectProperty $config.owner "groupSuffix")
-if ([string]::IsNullOrWhiteSpace($ownerGroupSuffix)) {
-    $ownerGroupSuffix = "_owner"
-}
-
+if ([string]::IsNullOrWhiteSpace($ownerGroupSuffix)) { $ownerGroupSuffix = '_owner' }
 $ownerSearchIn = [string](Get-ObjectProperty $config.owner "searchIn")
-if ([string]::IsNullOrWhiteSpace($ownerSearchIn)) {
-    throw "owner.searchIn jest wymagane, np. CORP."
-}
-
+if ([string]::IsNullOrWhiteSpace($ownerSearchIn)) { throw 'owner.searchIn jest wymagane.' }
 $ownerGroupName = $SafeName + $ownerGroupSuffix
 
-# owner.searchIn to nazwa katalogu/domeny widoczna dla CyberArk.
-# Nie jest używana do zapytań Active Directory. Do walidacji AD służy
-# -ADServer / owner.adServer / defaults.adServer (w tej kolejności).
-#
-# Walidacja grupy Owner odbywa się przed logowaniem do CyberArk i przed
-# wykonaniem jakichkolwiek zmian po stronie Vault/PVWA.
-if ([string]::IsNullOrWhiteSpace($ADServer)) {
-    throw "Nie wskazano domeny/kontrolera AD do walidacji grupy Owner. Ustaw -ADServer, owner.adServer albo defaults.adServer."
-}
-
-try {
-    Import-Module ActiveDirectory -ErrorAction Stop
-}
-catch {
-    throw "Nie można załadować modułu ActiveDirectory. Zainstaluj RSAT Active Directory PowerShell. Szczegóły: $($_.Exception.Message)"
-}
-
-try {
-    Write-Host ("Walidacja grupy Owner: nazwa='{0}', ADServer='{1}'" -f $ownerGroupName, $ADServer) -ForegroundColor Cyan
-
-    $ownerADGroup = Get-ADGroup -Identity $ownerGroupName -Server $ADServer -Properties sAMAccountName -ErrorAction Stop
-}
-catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
-    throw "Grupa Owner '$ownerGroupName' nie istnieje w Active Directory na '$ADServer'."
-}
-catch {
-    throw "Nie udało się sprawdzić grupy Owner '$ownerGroupName' w Active Directory na '$ADServer'. Szczegóły: $($_.Exception.Message)"
-}
-
-Write-Host ("Zweryfikowano grupę AD Owner: {0}; sAMAccountName={1}; DN={2}; ADServer={3}" -f $ownerADGroup.Name, $ownerADGroup.SamAccountName, $ownerADGroup.DistinguishedName, $ADServer) -ForegroundColor Green
-
-$members = [System.Collections.Generic.List[object]]::new()
-$members.Add([PSCustomObject]@{
-    name     = $ownerGroupName
+$roleGroups.Add([pscustomobject]@{
+    name = $ownerGroupName
+    role = $ownerRoleName
     searchIn = $ownerSearchIn
-    role     = $ownerRoleName
+    adServer = $ADServer
 })
 
-if (Test-ObjectProperty $config "members") {
-    foreach ($member in @($config.members)) {
-        $members.Add($member)
+if (Test-ObjectProperty $config 'roleGroups') {
+    foreach ($entry in @($config.roleGroups)) {
+        $role = [string](Get-ObjectProperty $entry 'role')
+        $suffix = [string](Get-ObjectProperty $entry 'groupSuffix')
+        $searchIn = [string](Get-ObjectProperty $entry 'searchIn')
+        $server = [string](Get-ObjectProperty $entry 'adServer')
+        if ([string]::IsNullOrWhiteSpace($role) -or [string]::IsNullOrWhiteSpace($suffix)) {
+            throw 'Kazdy element roleGroups wymaga role i groupSuffix.'
+        }
+        if ([string]::IsNullOrWhiteSpace($searchIn)) { $searchIn = $ownerSearchIn }
+        if ([string]::IsNullOrWhiteSpace($server)) { $server = $ADServer }
+        $roleGroups.Add([pscustomobject]@{
+            name = $SafeName + $suffix
+            role = $role
+            searchIn = $searchIn
+            adServer = $server
+        })
     }
+}
+
+$seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($group in $roleGroups) {
+    if (-not $seen.Add([string]$group.name)) {
+        throw "Powtorzona nazwa grupy w owner/roleGroups: '$($group.name)'."
+    }
+    if ($null -eq $config.roles.PSObject.Properties[[string]$group.role]) {
+        throw "Brak definicji roli '$($group.role)' dla grupy '$($group.name)'."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$group.adServer)) {
+        throw "Brak ADServer dla grupy '$($group.name)'."
+    }
+}
+try { Import-Module ActiveDirectory -ErrorAction Stop }
+catch { throw "Nie mozna zaladowac modulu ActiveDirectory: $($_.Exception.Message)" }
+
+# Validate all role groups before starting any Vault mutations.
+foreach ($group in $roleGroups) {
+    try {
+        $adGroup = Get-ADGroup -Identity $group.name -Server $group.adServer -Properties sAMAccountName -ErrorAction Stop
+    }
+    catch {
+        throw "Nie mozna zweryfikowac grupy '$($group.name)' w AD '$($group.adServer)': $($_.Exception.Message)"
+    }
+    Write-Host ("AD OK: grupa '{0}', rola '{1}', sAMAccountName '{2}'" -f $group.name, $group.role, $adGroup.SamAccountName) -ForegroundColor Green
+    $members.Add([pscustomobject]@{
+        name = $group.name
+        role = $group.role
+        searchIn = $group.searchIn
+    })
+}
+if (Test-ObjectProperty $config 'members') {
+    foreach ($member in @($config.members)) { $members.Add($member) }
 }
 
 foreach ($member in $members) {
