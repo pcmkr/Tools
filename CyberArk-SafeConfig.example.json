@@ -84,5 +84,10 @@
       "searchIn": "Vault",
       "validateAD": false
     }
-  ]
+  ],
+  "accountGroup": {
+    "name": "{SafeName}_accounts",
+    "groupPlatformId": "WinGroup",
+    "createIfMissing": true
+  }
 }
