@@ -351,25 +351,38 @@ function Get-SafeMember {
         [Parameter(Mandatory)][hashtable]$Headers
     )
 
+    # Pobieramy liste czlonkow zamiast GET konkretnego czlonka.
+    # Niektore wersje PVWA dla nieistniejacego czlonka zwracaja
+    # SWS0008 (czasem HTTP 400 zamiast 404).
     $safeId = [uri]::EscapeDataString($SafeIdentifier)
-    $memberId = [uri]::EscapeDataString($MemberName)
-
-    try {
-        return Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeId/Members/$memberId/" -Headers $Headers
-    }
-    catch {
-        # Invoke-CyberArkApi rzuca tekstowy wyjatek, przez co oryginalny
-        # HTTP StatusCode nie jest juz dostepny w Exception.Response.
-        # SWS0008 oznacza, ze wskazany czlonek nie zostal odnaleziony
-        # w Safe. To prawidlowy wynik podczas tworzenia nowego Safe.
-        $errorText = [string]$_.Exception.Message
-        if ($errorText -match "ErrorCode='SWS0008'" -and
-            $errorText -match 'Owner was not found in safe|was not found in safe') {
-            Write-Verbose ("Czlonek '{0}' nie istnieje w Safe '{1}' - zostanie dodany." -f $MemberName, $SafeIdentifier)
-            return $null
+    $uri = "$PVWAURL/api/Safes/$safeId/Members/"
+    $page = 0
+    do {
+        $page++
+        if ($page -gt 100) { throw "Przekroczono limit stronicowania czlonkow Safe '$SafeIdentifier'." }
+        $response = Invoke-CyberArkApi -Method Get -Uri $uri -Headers $Headers
+        $items = @()
+        if ($null -ne $response.value) {
+            $items = @($response.value)
         }
-        throw
-    }
+        elseif ($response -is [array]) {
+            $items = @($response)
+        }
+        foreach ($item in $items) {
+            if ([string]::Equals([string]$item.memberName, $MemberName, [StringComparison]::OrdinalIgnoreCase)) {
+                return $item
+            }
+        }
+        $nextLink = [string](Get-ObjectProperty $response 'nextLink')
+        if ([string]::IsNullOrWhiteSpace($nextLink)) { break }
+        if ([uri]::IsWellFormedUriString($nextLink, [UriKind]::Absolute)) {
+            $uri = $nextLink
+        }
+        else {
+            $uri = ([uri]::new(([uri]$PVWAURL), $nextLink)).AbsoluteUri
+        }
+    } while ($true)
+    return $null
 }
 
 function ConvertTo-PermissionObject {
