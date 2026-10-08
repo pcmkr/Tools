@@ -70,5 +70,17 @@
     "accountSecretEnvironmentVariable": "CYBERARK_ACCOUNT_SECRET",
     "accountSecret": null,
     "adServer": "corp.example.com"
-  }
+  },
+  "roleGroups": [
+    {
+      "role": "Operator",
+      "groupSuffix": "_operator",
+      "searchIn": "CORP"
+    },
+    {
+      "role": "Auditor",
+      "groupSuffix": "_auditor",
+      "searchIn": "CORP"
+    }
+  ]
 }
