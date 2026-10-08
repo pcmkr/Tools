@@ -60,10 +60,8 @@ $config.account.secretType = 'password'
 # Nie przenosimy LogonDomain z szablonu kont domenowych.
 # Pozostale platformAccountProperties sa przekazywane tylko po jawnym podaniu.
 $newProperties = [ordered]@{}
-if ($OSType -eq 'RedHat') {
-    # Standardowy port SSH; usun/zmien, jesli platforma ma inne wymagania.
-    $newProperties['Port'] = '22'
-}
+# RedHat: nie dodawaj domyslnie Port. Platformy UnixSSH/RHEL moga nie miec takiej wlasciwosci.
+# Wlasciwosci platformy podaje sie jawnie przez -PlatformAccountProperties.
 if ($null -ne $PlatformAccountProperties) {
     foreach ($key in $PlatformAccountProperties.Keys) {
         $newProperties[[string]$key] = [string]$PlatformAccountProperties[$key]
