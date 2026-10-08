@@ -69,6 +69,11 @@ if ($null -ne $PlatformAccountProperties) {
         $newProperties[[string]$key] = [string]$PlatformAccountProperties[$key]
     }
 }
+if ($OSType -eq 'Windows') {
+    # Local Windows account: LogonTo must always match account.address.
+    # Set last so custom properties cannot override this requirement.
+    $newProperties['LogonTo'] = $Address
+}
 $config.account.platformAccountProperties = [pscustomobject]$newProperties
 
 $tempPath = Join-Path ([System.IO.Path]::GetTempPath()) ("CyberArk-LocalAccount-{0}.json" -f [guid]::NewGuid().ToString('N'))
