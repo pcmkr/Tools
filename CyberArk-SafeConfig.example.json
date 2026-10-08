@@ -6,12 +6,6 @@
     "olacEnabled": false,
     "numberOfDaysRetention": 10
   },
-  "owner": {
-    "role": "Owner",
-    "groupSuffix": "_owner",
-    "searchIn": "CORP",
-    "adServer": "corp.example.com"
-  },
   "roles": {
     "Owner": {
       "useAccounts": true,
@@ -45,13 +39,6 @@
       "viewSafeMembers": true
     }
   },
-  "members": [
-    {
-      "name": "Vault Admins",
-      "searchIn": "Vault",
-      "role": "Owner"
-    }
-  ],
   "account": {
     "address": "corp.example.com",
     "platformId": "WinDomain",
@@ -71,16 +58,31 @@
     "accountSecret": null,
     "adServer": "corp.example.com"
   },
-  "roleGroups": [
+  "safeMembers": [
+    {
+      "role": "Owner",
+      "groupSuffix": "_owner",
+      "searchIn": "CORP",
+      "adServer": "corp.example.com",
+      "validateAD": true
+    },
     {
       "role": "Operator",
       "groupSuffix": "_operator",
-      "searchIn": "CORP"
+      "searchIn": "CORP",
+      "validateAD": true
     },
     {
       "role": "Auditor",
       "groupSuffix": "_auditor",
-      "searchIn": "CORP"
+      "searchIn": "CORP",
+      "validateAD": true
+    },
+    {
+      "role": "Owner",
+      "name": "Vault Admins",
+      "searchIn": "Vault",
+      "validateAD": false
     }
   ]
 }
