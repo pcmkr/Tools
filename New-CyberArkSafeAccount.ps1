@@ -903,7 +903,10 @@ try {
     Write-Host ""
     Write-Host "Operacja zakończona." -ForegroundColor Green
     Write-Host ("Safe:        {0}" -f $SafeName)
-    Write-Host ("Owner group: {0}" -f $ownerGroupName)
+    Write-Host "Grupy ról (owner i roleGroups):"
+    foreach ($group in $roleGroups) {
+        Write-Host ("  {0,-18} {1}" -f ([string]$group.role + ':'), [string]$group.name)
+    }
     Write-Host ("Konto:       {0}" -f $accountTarget)
 }
 finally {
