@@ -32,7 +32,8 @@ param(
     [hashtable]$PlatformAccountProperties,
     [switch]$AllowExistingSafe,
     [switch]$UpdateExistingMembers,
-    [switch]$SkipReconcile
+    [switch]$SkipReconcile,
+    [switch]$AddToAccountGroup
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -96,6 +97,7 @@ try {
     if ($AllowExistingSafe) { $arguments.AllowExistingSafe = $true }
     if ($UpdateExistingMembers) { $arguments.UpdateExistingMembers = $true }
     if ($SkipReconcile) { $arguments.SkipReconcile = $true }
+    if ($AddToAccountGroup) { $arguments.AddToAccountGroup = $true }
 
     Write-Host ("System: {0}; serwer: {1}; login: {2}; platformId: {3}" -f $OSType,$Address,$AccountUserName,$selectedPlatform)
     # Przekazujemy WhatIf/Confirm explicite; wrapper sam nie ingeruje w API.
