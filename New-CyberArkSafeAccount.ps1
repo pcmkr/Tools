@@ -131,7 +131,9 @@ param(
 
     [switch]$UpdateExistingMembers,
 
-    [switch]$SkipReconcile
+    [switch]$SkipReconcile,
+
+    [switch]$AddToAccountGroup
 )
 
 Set-StrictMode -Version Latest
@@ -505,6 +507,17 @@ foreach ($requiredSection in @("safe", "roles", "account", "safeMembers")) {
     }
 }
 
+# Account Group is opt-in. Never touch groups without -AddToAccountGroup.
+$accountGroupConfig = Get-ObjectProperty $config 'accountGroup'
+if ($AddToAccountGroup) {
+    if ($null -eq $accountGroupConfig) { throw 'Brak sekcji accountGroup w konfiguracji.' }
+    foreach ($requiredGroupProperty in @('name', 'groupPlatformId')) {
+        if ([string]::IsNullOrWhiteSpace([string](Get-ObjectProperty $accountGroupConfig $requiredGroupProperty))) {
+            throw "accountGroup.$requiredGroupProperty jest wymagane przy -AddToAccountGroup."
+        }
+    }
+}
+
 if ((Test-ObjectProperty $config.safe "numberOfDaysRetention") -and
     (Test-ObjectProperty $config.safe "numberOfVersionsRetention")) {
     throw "Ustaw tylko jedno: safe.numberOfDaysRetention albo safe.numberOfVersionsRetention."
@@ -831,6 +844,62 @@ try {
         finally {
             $plainSecret = $null
         }
+    }
+
+    # Optional Account Group provisioning. Group Platform applies to the group,
+    # not to the individual account's platformId.
+    if ($AddToAccountGroup -and $null -ne $createdAccount) {
+        $newAccountId = [string](Get-ObjectProperty $createdAccount 'id')
+        if (-not $newAccountId) { throw 'Konto dodane, ale API nie zwrocilo ID do Account Group.' }
+
+        $groupName = Expand-TemplateValue ([string](Get-ObjectProperty $accountGroupConfig 'name'))
+        $groupPlatformId = [string](Get-ObjectProperty $accountGroupConfig 'groupPlatformId')
+        $safeEscaped = [uri]::EscapeDataString($SafeName)
+        $groupResponse = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeEscaped/AccountGroups" -Headers $headers
+        $groups = @()
+        if ($null -ne (Get-ObjectProperty $groupResponse 'value')) { $groups = @($groupResponse.value) }
+        elseif ($groupResponse -is [array]) { $groups = @($groupResponse) }
+        $group = @($groups | Where-Object {
+            [string]::Equals([string](Get-ObjectProperty $_ 'groupName'), $groupName, [StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1)
+        $group = if ($group.Count -gt 0) { $group[0] } else { $null }
+        if ($null -eq $group) {
+            $createIfMissing = Get-ObjectProperty $accountGroupConfig 'createIfMissing'
+            if ($createIfMissing -isnot [bool] -or -not $createIfMissing) {
+                throw "Account Group '$groupName' nie istnieje. Ustaw accountGroup.createIfMissing=true albo utworz ja recznie."
+            }
+            if ($PSCmdlet.ShouldProcess("Account Group '$groupName'", 'Utworzenie grupy kont')) {
+                $group = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/AccountGroups" -Headers $headers -Body @{
+                    groupName = $groupName
+                    groupPlatformId = $groupPlatformId
+                    safe = $SafeName
+                }
+            }
+        }
+        if ($null -ne $group) {
+            $groupId = [string](Get-ObjectProperty $group 'groupID')
+            if (-not $groupId) { $groupId = [string](Get-ObjectProperty $group 'id') }
+            if (-not $groupId) { throw "Nie mozna odczytac ID Account Group '$groupName'." }
+            $groupIdEncoded = [uri]::EscapeDataString($groupId)
+            $current = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/AccountGroups/$groupIdEncoded/Members" -Headers $headers
+            $existing = @()
+            if ($null -ne (Get-ObjectProperty $current 'value')) { $existing = @($current.value) }
+            elseif ($current -is [array]) { $existing = @($current) }
+            $alreadyMember = @($existing | Where-Object {
+                ([string](Get-ObjectProperty $_ 'accountID') -eq $newAccountId) -or
+                ([string](Get-ObjectProperty $_ 'id') -eq $newAccountId)
+            }).Count -gt 0
+            if (-not $alreadyMember -and $PSCmdlet.ShouldProcess("Account '$newAccountId'", "Dodanie do Account Group '$groupName'")) {
+                Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/AccountGroups/$groupIdEncoded/Members" -Headers $headers -Body @{ accountID = $newAccountId } | Out-Null
+                Write-Host ("Dodano konto do Account Group '{0}' (platforma grupy: {1})." -f $groupName, $groupPlatformId) -ForegroundColor Green
+            }
+            elseif ($alreadyMember) {
+                Write-Host ("Konto jest juz w Account Group '{0}'." -f $groupName) -ForegroundColor Yellow
+            }
+        }
+    }
+    elseif ($AddToAccountGroup -and $null -eq $createdAccount) {
+        Write-Warning 'Nie dodano konta do Account Group: w tym przebiegu nie utworzono nowego konta.'
     }
 
     if (-not $SkipReconcile -and $null -ne $createdAccount) {
