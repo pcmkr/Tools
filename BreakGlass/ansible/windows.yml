@@ -1,0 +1,50 @@
+---
+- name: Break-glass local admin on Windows Server
+  hosts: bg_windows
+  gather_facts: false
+  serial: 10
+  vars:
+    bg_username: bguser
+  pre_tasks:
+    - name: Require secret provided through encrypted Ansible Vault or secret backend
+      ansible.builtin.assert:
+        that:
+          - bg_windows_password is defined
+          - bg_windows_password | length >= 20
+        fail_msg: "Provide bg_windows_password securely; do not put it in inventory or CLI."
+      no_log: true
+
+    - name: Refuse domain controllers (local SAM accounts do not exist there)
+      ansible.windows.win_powershell:
+        script: |
+          $cs = Get-CimInstance Win32_ComputerSystem
+          if ($cs.DomainRole -ge 4) { throw "Domain controller not supported for local bguser" }
+      changed_when: false
+
+  tasks:
+    - name: Create account without resetting its password on subsequent runs
+      ansible.windows.win_user:
+        name: "{{ bg_username }}"
+        password: "{{ bg_windows_password }}"
+        update_password: on_create
+        state: present
+        account_disabled: false
+        account_expires: never
+        password_never_expires: true
+        password_expired: false
+        description: "Emergency local administrator - controlled by PAM"
+        groups:
+          - S-1-5-32-544
+        groups_action: add
+      no_log: true
+
+    - name: Confirm account exists and belongs to local Administrators
+      ansible.windows.win_powershell:
+        script: |
+          $u = Get-LocalUser -Name 'bguser' -ErrorAction Stop
+          $admins = Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop
+          if ($u.Enabled -ne $true) { throw "bguser disabled" }
+          if (@($admins | Where-Object { $_.SID -eq $u.SID }).Count -ne 1) {
+              throw "bguser is not a local administrator"
+          }
+      changed_when: false
