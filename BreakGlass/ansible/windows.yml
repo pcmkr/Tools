@@ -14,6 +14,15 @@
         fail_msg: "Provide bg_windows_password securely; do not put it in inventory or CLI."
       no_log: true
 
+    - name: Reject an existing unmanaged bguser account
+      ansible.windows.win_powershell:
+        script: |
+          $existing = Get-LocalUser -Name 'bguser' -ErrorAction SilentlyContinue
+          if ($null -ne $existing -and $existing.Description -ne 'Emergency local administrator - controlled by PAM') {
+              throw 'Existing bguser is not marked as managed by this playbook; investigate before adoption.'
+          }
+      changed_when: false
+
     - name: Refuse domain controllers (local SAM accounts do not exist there)
       ansible.windows.win_powershell:
         script: |
