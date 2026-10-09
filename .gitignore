@@ -1,2 +1,12 @@
 # Local CyberArk configuration may contain secrets.
 CyberArk-SafeConfig.json
+
+# Break-Glass real environment and secrets (no local artifacts in repo)
+BreakGlass/CyberArk-BreakGlassConfig.json
+BreakGlass/manifest.csv
+BreakGlass/ansible/inventory.ini
+BreakGlass/*audit*.csv
+BreakGlass/*secrets*.yml
+BreakGlass/*secrets*.yaml
+*.vault.yml
+*.vault.yaml
