@@ -422,31 +422,33 @@ function Get-CyberArkAccountInSafe {
         [Parameter(Mandatory)][string]$PlatformId,
         [Parameter(Mandatory)][hashtable]$Headers
     )
-
+    # Safe may contain hundreds of accounts. Never infer absence from only page 1.
     $safeFilter = [uri]::EscapeDataString("safeName eq $SafeName")
-    $uri = "$PVWAURL/api/Accounts?filter=$safeFilter"
-
-    $response = Invoke-CyberArkApi -Method Get -Uri $uri -Headers $Headers
-    $accounts = @()
-
-    if ($null -ne $response.value) {
-        $accounts = @($response.value)
-    }
-    elseif ($response -is [System.Array]) {
-        $accounts = @($response)
-    }
-    elseif ($null -ne $response) {
-        $accounts = @($response)
-    }
-
-    return $accounts |
-        Where-Object {
+    $limit = 100
+    $offset = 0
+    do {
+        $uri = "$PVWAURL/api/Accounts?filter=$safeFilter&limit=$limit&offset=$offset"
+        $response = Invoke-CyberArkApi -Method Get -Uri $uri -Headers $Headers
+        if ($null -ne (Get-ObjectProperty $response 'value')) {
+            $accounts = @($response.value)
+        }
+        elseif ($response -is [array]) {
+            $accounts = @($response)
+        }
+        else {
+            throw "Unexpected Accounts response; refusing unsafe duplicate detection."
+        }
+        $matches = @($accounts | Where-Object {
             $_.safeName -eq $SafeName -and
             $_.userName -eq $UserName -and
             $_.address -eq $Address -and
             $_.platformId -eq $PlatformId
-        } |
-        Select-Object -First 1
+        })
+        if ($matches.Count -gt 0) { return $matches[0] }
+        $offset += $accounts.Count
+        if ($offset -gt 10000) { throw 'Account list exceeded pagination safety limit.' }
+    } while ($accounts.Count -eq $limit)
+    return $null
 }
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
