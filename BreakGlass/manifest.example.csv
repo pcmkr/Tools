@@ -1,0 +1,5 @@
+os,address,platformId
+Windows,win-test01.example.invalid,BG-Windows-Local
+Windows,win-test02.example.invalid,BG-Windows-Local
+RHEL,rhel-test01.example.invalid,BG-RHEL-Local
+RHEL,rhel-test02.example.invalid,BG-RHEL-Local
