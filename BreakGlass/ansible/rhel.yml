@@ -1,0 +1,57 @@
+---
+- name: Break-glass local sudo account on Red Hat Enterprise Linux
+  hosts: bg_rhel
+  gather_facts: false
+  become: true
+  serial: 10
+  vars:
+    bg_username: bguser
+  pre_tasks:
+    - name: Require secret provided through encrypted Ansible Vault or secret backend
+      ansible.builtin.assert:
+        that:
+          - bg_rhel_password is defined
+          - bg_rhel_password | length >= 20
+        fail_msg: "Provide bg_rhel_password securely; do not put it in inventory or CLI."
+      no_log: true
+
+    - name: Require RHEL target
+      ansible.builtin.command: cat /etc/redhat-release
+      register: bg_os_release
+      changed_when: false
+      failed_when: "'Red Hat Enterprise Linux' not in bg_os_release.stdout"
+
+  tasks:
+    - name: Ensure local account exists with initial password only
+      ansible.builtin.user:
+        name: "{{ bg_username }}"
+        comment: "Emergency sudo account - controlled by PAM"
+        shell: /bin/bash
+        group: "{{ bg_username }}"
+        create_home: true
+        groups: wheel
+        append: true
+        password: "{{ bg_rhel_password | password_hash('sha512') }}"
+        update_password: on_create
+        expires: -1
+        password_expire_max: -1
+        state: present
+      no_log: true
+
+    - name: Install explicit sudo policy requiring bguser password
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/90-bguser
+        content: "bguser ALL=(ALL) ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: "/usr/sbin/visudo -cf %s"
+
+    - name: Confirm account and sudo policy
+      ansible.builtin.shell: |
+        set -eu
+        id bguser
+        /usr/sbin/visudo -cf /etc/sudoers.d/90-bguser
+      args:
+        executable: /bin/bash
+      changed_when: false
