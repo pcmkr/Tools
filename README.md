@@ -1,6 +1,10 @@
 # Tools
 
-Prywatne repozytorium z narzędziami administracyjnymi i audytowymi dla Active Directory, CyberArk PAM i Splunk.
+Repozytorium narzędzi administracyjnych i audytowych dla Active Directory, CyberArk PAM i Splunk. **UWAGA: repozytorium jest obecnie PUBLICZNE; nie commituj sekretów, rzeczywistych inventory, adresów wewnętrznych ani procedur lokalizacji depozytu offline.**
+
+## Break-Glass (Windows Server + RHEL)
+
+Dokumentacja, playbooki Ansible, onboarding w CyberArk i testy kontrolne znajdują się w [BreakGlass/README.md](BreakGlass/README.md). Przed wdrożeniem przeprowadź pilotaż i zaakceptuj ryzyko wspólnego hasła dla całej kohorty.
 
 ## Zawartość
 
