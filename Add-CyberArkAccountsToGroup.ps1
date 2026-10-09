@@ -22,6 +22,7 @@ param(
     [pscredential]$Credential,
     [string]$GroupName,
     [string]$GroupPlatformId,
+    [string[]]$AllowedPlatformIds,
     [switch]$CreateGroupIfMissing
 )
 Set-StrictMode -Version Latest
@@ -115,6 +116,11 @@ try {
             safe=$SafeName
         }
     }
+    # Fail closed if a pre-existing group has the wrong group platform.
+    $actualGroupPlatform = [string](Get-Property $group 'groupPlatformId')
+    if ($actualGroupPlatform -and -not [string]::Equals($actualGroupPlatform,$GroupPlatformId,[StringComparison]::OrdinalIgnoreCase)) {
+        throw "Group '$GroupName' uses groupPlatformId '$actualGroupPlatform' instead of '$GroupPlatformId'."
+    }
     $groupId = [string](Get-Property $group 'groupID')
     if (-not $groupId) { $groupId = [string](Get-Property $group 'id') }
     if (-not $groupId) { throw "CyberArk did not return GroupID for '$GroupName'." }
@@ -139,6 +145,12 @@ try {
             $accountSafe = [string](Get-Property $account 'safeName')
             if (-not [string]::Equals($accountSafe,$SafeName,[StringComparison]::OrdinalIgnoreCase)) {
                 throw "Account belongs to Safe '$accountSafe', expected '$SafeName'."
+            }
+            if ($AllowedPlatformIds -and $AllowedPlatformIds.Count -gt 0) {
+                $actualPlatform = [string](Get-Property $account 'platformId')
+                if ($actualPlatform -notin $AllowedPlatformIds) {
+                    throw "Account $id has target platform '$actualPlatform', allowed: $($AllowedPlatformIds -join ', ')."
+                }
             }
             if ($PSCmdlet.ShouldProcess($id,"Add to Account Group '$GroupName'")) {
                 Invoke-Api Post "/api/AccountGroups/$escapedGroup/Members" @{ accountID=$id } | Out-Null
