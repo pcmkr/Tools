@@ -872,9 +872,9 @@ try {
             }
             if ($PSCmdlet.ShouldProcess("Account Group '$groupName'", 'Utworzenie grupy kont')) {
                 $group = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/AccountGroups/" -Headers $headers -Body @{
-                    groupName = $groupName
-                    groupPlatformId = $groupPlatformId
-                    safe = $SafeName
+                    GroupName = $groupName
+                    GroupPlatformID = $groupPlatformId
+                    Safe = $SafeName
                 }
             }
         }
