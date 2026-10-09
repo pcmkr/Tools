@@ -50,6 +50,12 @@ Wymagania:
 - Nie włączać AutoChangeOnAdd, dopóki początkowe hasła nie zostaną spójnie zdeponowane w PAM i offline.
 - Oddzielić konto do **reconcile** od bguser. Nie wykorzystywać go w procedurze zwykłej rotacji bez uzasadnienia i osobnej akceptacji.
 
+### Uwaga o wersji API Account Groups / błędzie 404
+
+Dokumentacja CyberArk prezentuje dwa warianty odczytu grup: starsze GET /PasswordVault/API/AccountGroups?Safe={Safe} i nowsze GET /PasswordVault/API/Safes/{Safe}/AccountGroups (widoczny m.in. w psPAS dla wersji od 10.5). Żaden nie jest uniwersalnie poprawny dla każdego środowiska. Dotychczasowy skrypt Add-CyberArkAccountsToGroup.ps1 korzysta z pierwszego wariantu, zgodnie z wcześniejszym obejściem błędu 404. **Przed produkcją należy potwierdzić odpowiedź GET w Waszej konkretnej wersji.** Jeśli jest konieczne przejście na wariant Safe-scoped, należy zmienić wszystkie odwołania i testy spójnie, a nie tylko jedną ścieżkę. Nie traktować błędu 404 jako zgody na stworzenie duplikatu.
+
+Tworzenie grup używa POST /api/AccountGroups/ z polami GroupName, GroupPlatformID, Safe; API dla członków GET/POST /api/AccountGroups/{GroupID}/Members, pole AccountID. W wersjach starszych pola i schemat odpowiedzi mogą wymagać zmian adaptacyjnych.
+
 ## 4. Uprawnienia do sejfu (RBAC)
 
 | Rola | Zadania | Uprawnienia Safe (skrót) |
