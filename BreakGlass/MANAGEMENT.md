@@ -1,82 +1,76 @@
-# Break-Glass – materiał dla kierownictwa i właścicieli ryzyka
+# Break-Glass – dokument dla managementu (podział według produktu)
 
-**Temat:** zapewnienie administracyjnego dostępu awaryjnego do 300 serwerów (150 Windows Server, 150 Red Hat Enterprise Linux) w razie awarii systemów centralnego uwierzytelniania i CyberArk PAM.
+**Data:** 9 października 2026. **Status:** propozycja do zatwierdzenia i pilotażu.
 
-**Decyzja projektowa:** lokalne konto bguser na każdym serwerze; hasło przechowywane i kontrolowane w CyberArk; odrębne, wspólne hasło w obrębie dwóch grup: Windows i Linux. Hasła nie są rotowane samoczynnie, lecz zmieniane na żądanie uprawnionego operatora, za pośrednictwem CyberArk CPM.
+## Cel biznesowy
 
-## 1. Dlaczego projekt jest potrzebny
+Zapewnić zdolność administracyjnego dostępu do **300 serwerów** (150 Windows Server + 150 Red Hat Enterprise Linux) nawet podczas jednoczesnej niedostępności Active Directory i CyberArk PAM.
 
-Nawet sprawne rozwiązanie PAM może nie umożliwić działania, jeśli jednocześnie niedostępne są AD, sieć, serwery PAM lub mechanizmy uwierzytelnienia. Break-Glass zapewnia kontrolowaną, niezależną ścieżkę uzyskania uprawnień administratora niezbędnych do naprawy infrastruktury.
+Każdy serwer otrzyma lokalne konto administracyjne **bguser**, które w normalnych warunkach będzie przechowywane i nadzorowane w CyberArk.
 
-Projekt minimalizuje zależność od pojedynczego dostawcy lub systemu, ale **nie eliminuje ryzyka operacyjnego**. Procedura offline to rozwiązanie ostatniej szansy, nie codzienna metoda pracy.
+## Kluczowa decyzja: izolacja według produktu
 
-## 2. Jak to będzie działać
+**Produktem jest oddzielny obszar ryzyka i administracji, niezależnie od tego, jaki system operacyjny działa na obsługujących go serwerach.**
 
-| Sytuacja | Sposób postępowania |
-|---|---|
-| Systemy pracują normalnie | Hasła są kontrolowane przez CyberArk, dostęp podlega autoryzacji i audytowi |
-| Planowana ręczna rotacja | Operator podaje nowe hasło; CPM zmienia je na wszystkich członkach właściwej grupy; wynik jest weryfikowany |
-| Awaria AD, CyberArk jest dostępny | Wykorzystywane są niezależne uprawnienia PAM zgodnie z zatwierdzoną procedurą |
-| Awaria zarówno AD, jak i CyberArk | Dwóch uprawnionych kustoszy otwiera niezależny depozyt aktualnego hasła, administrator loguje się lokalnie przez konsolę OOB |
-| Po zakończeniu awarii | Przegląd zdarzeń, rozliczenie dostępu, ręczna rotacja użytych haseł, aktualizacja depozytu |
+Przykład:
 
-## 3. Ryzyka i zabezpieczenia
+| Produkt | Safe CyberArk | Account Group | Systemy i hasło |
+|---|---|---|---|
+| ERP | BG-ERP | BG-ERP-GRP | bguser na wszystkich serwerach Windows i RHEL ERP — jedno wspólne hasło ERP |
+| CRM | BG-CRM | BG-CRM-GRP | bguser na wszystkich serwerach Windows i RHEL CRM — inne wspólne hasło CRM |
+| DWH | BG-DWH | BG-DWH-GRP | bguser na wszystkich serwerach Windows i RHEL DWH — inne wspólne hasło DWH |
 
-### Największe ryzyko: wspólne hasło na 150 serwerach
+Nazwy są przykładowe. Dokładne przypisanie 300 hostów wynika z CMDB/inwentarza serwerów i właścicieli produktów.
 
-Wymóg jednego hasła dla całej kohorty upraszcza dostęp awaryjny, lecz radykalnie zwiększa skutki ujawnienia hasła z pojedynczego hosta. Uzyskanie jednego hasła może umożliwić atak na 150 maszyn.
+## Jak będzie działać
 
-Zalecane zabezpieczenia:
-- Dwa oddzielne hasła Windows i Linux; nie wolno tworzyć jednej wspólnej natywnej Account Group, jeśli mają pozostać różne.
-- Wyjątkowy dostęp i silne kontrole tożsamości operatorów oraz uprawnienia minimalne w CyberArk.
-- Kontrola wykorzystania bguser w SIEM (alert dla każdego logowania poza zatwierdzonym incydentem/testem).
-- Logowanie awaryjne przez niezależne, zabezpieczone konsole, z ograniczeniem niepotrzebnego dostępu zdalnego.
-- Dual custody oraz dwie niezależne kopie depozytu offline.
-- Przegląd kont, członkostwa i depozytu co najmniej kwartalnie; test realnej awarii minimum dwa razy w roku.
-- Zmiana hasła po użyciu awaryjnym lub podejrzeniu ujawnienia (mimo że nie ma rotacji okresowej).
+1. Inżynierowie zakładają lokalne konto bguser na serwerach produktu (Windows i RHEL).
+2. Konta są dodawane do **jednego Safe produktu i jednej Account Group produktu**.
+3. Dla każdego produktu obowiązuje **jedno** silne hasło wspólne dla wszystkich jego hostów. Różne produkty nie współdzielą hasła.
+4. Hasło nie jest zmieniane samoczynnie przez harmonogram. Osoba z odpowiednimi uprawnieniami **podaje nowe hasło** i zleca CPM jego zmianę we wszystkich systemach produktu.
+5. Każdą zmianę rozlicza się oddzielnie: wynik 100% kont w grupie, obsługa błędów i aktualizacja depozytu offline.
+6. Przy awarii AD i CyberArk działa zatwierdzony niezależny depozyt, procedura podwójnej autoryzacji i konsola out-of-band.
 
-**Alternatywa zmniejszająca ryzyko:** podział 150 serwerów na mniejsze grupy haseł według środowiska, krytyczności i segmentu sieci. Kierownictwo powinno świadomie zaakceptować wariant 150+150 lub wybrać mniejsze domeny skutków.
+## Ryzyka i kompensacje
 
-### Inne ryzyka
+| Ryzyko | Znaczenie | Kontrola |
+|---|---|---|
+| Wspólne hasło produktu | Poznanie jednego hasła może umożliwić dostęp do **wszystkich hostów tego produktu** | Oddzielne produkty, dostęp ograniczony, segmentacja, monitorowanie każdego użycia bguser |
+| Rotacja niepełna | Część systemów ma stare, a część nowe hasło | Raport per host, wstrzymanie zamknięcia operacji, kontrola stanu SPLIT PASSWORD |
+| AD i PAM niedostępne | Brak możliwości pobrania hasła online | Dwie niezależne kopie offline, dual custody, realny test OOB |
+| Depozyt nieaktualny | Hasło offline nie działa w kryzysie | Aktualizacja dopiero po 100% sukcesu CPM i testach, okresowe ćwiczenia |
+| Serwer utrzymuje wiele produktów | Jedno lokalne bguser nie może mieć dwóch różnych haseł jednocześnie | Formalna mapa pojedynczej domeny hasła / decyzja o wydzieleniu kont lub wspólnym produkcie nadrzędnym |
+| Nieuprawnione użycie | Dostęp administratora bez prawidłowej decyzji | Rozdział obowiązków i uprawnień Safe, Alert SIEM, protokół incydentu |
 
-| Ryzyko | Kontrola |
-|---|---|
-| Niedostępność PAM i AD jednocześnie | Niezależny depozyt offline, dostęp OOB, próbne odłączenie usług centralnych |
-| Nieudana zmiana hasła na części serwerów | Stan niejednorodny, per-host raport CPM, brak automatycznego zamknięcia zmiany |
-| Nieaktualna kopia awaryjna | Aktualizacja depozytu dopiero po pełnym potwierdzeniu rotacji; dwie kontrolowane kopie |
-| Niezamierzona rotacja przez politykę PAM | Wyłączenie automatycznych wyzwalaczy zmiany na platformach i w Master Policy, a nie blokada CPM |
-| Utrata audytu online podczas awarii | Dziennik offline oraz późniejsze powiązanie z logami Windows/Linux i zgłoszeniem incydentu |
-| Nieuprawnione użycie konta | Alarmy, rozdzielenie obowiązków, przegląd każdego wykorzystania |
+Korzyść: ujawnienie hasła CRM nie musi narażać ERP, o ile hosty są prawidłowo rozdzielone, nie współdzielą tej samej tożsamości ani hasła. Izolacja nie jest jednak absolutna przy współdzielonej infrastrukturze i innych wspólnych uprawnieniach.
 
-## 4. Koszt i wpływ na operacje
+## Dlaczego nie jedno hasło na wszystkie 300 maszyn?
 
-Nie zakładamy nowych licencji bez analizy aktualnej umowy CyberArk i Ansible. Realny koszt projektu to prace zespołów PAM, Windows, Linux, IAM/Security i Incident Response oraz utrzymanie depozytu offline.
+Taki wariant poszerzałby skutki kompromitacji. Granice produktów są bardziej sensowną jednostką nadzoru, odpowiedzialności i rotacji niż granica Windows / Linux, ponieważ incydent i odtwarzanie usługi obejmują zwykle cały produkt.
 
-Elementy kosztu:
-- Konfiguracja platform CPM, Safe, grup i uprawnień.
-- Jednorazowe utworzenie 300 kont i ich weryfikacja.
-- Obsługa manualnych zmian, zatwierdzanie i analiza raportu dla 300 hostów.
-- Ćwiczenia awaryjne, kontrola magazynowania haseł, przeglądy audytowe.
-- Czas potrzebny na naprawę częściowej rotacji i utrzymanie wyjątków bezpieczeństwa.
+**Zasada rekomendowana:** jedna domena hasła per produkt, z możliwością dalszego podziału bardzo dużych produktów według krytyczności, środowiska lub strefy sieciowej.
 
-Nie przedstawiamy fikcyjnej kwoty ani gwarantowanego czasu przełączenia. Oba parametry będą mierzone w pilocie.
+## Koszty operacyjne
 
-## 5. Plan wdrożenia i punkty decyzyjne
+Koszty obejmują konfigurację CyberArk CPM, Safe i grup, przygotowanie Ansible, wdrożenie 300 kont, opracowanie procedury offline, testy i okresowe kontrole. Nie szacuje się kosztu licencji ani roboczogodzin bez sprawdzenia lokalnej konfiguracji, umowy i liczby produktów.
+
+## Plan wdrożenia
 
 | Etap | Zakres | Warunek przejścia |
 |---|---|---|
-| 0. Design approval | Model grup, uprawnienia, ryzyko wspólnych haseł, depozyt offline | Akceptacja właścicieli Windows, Linux, PAM i Security |
-| 1. Pilot techniczny | 2 Windows + 2 RHEL, odłączone AD/PAM, ręczna rotacja | 100% skuteczność i potwierdzona semantyka ChangeEntireGroup |
-| 2. Rozszerzony pilot | 10 Windows + 10 RHEL | Brak niezamierzonej rotacji, działający audyt i OOB |
-| 3. Wdrożenie produkcyjne | Pozostałe 280 hostów, partiami | 300/300 kont, prawidłowe hasła i członkostwo |
-| 4. Test odtworzeniowy | Kontrolowana niedostępność AD/PAM | Działający offline access, oba depozyty aktualne |
+| Design | Lista produktów i hostów, Safe/Group per produkt, role i depozyty | Zatwierdzenie właścicieli i Security |
+| Pilot | Produkt testowy z Windows i RHEL w jednej grupie; drugi produkt dla izolacji | Potwierdzona zmiana wskazanego hasła przez CPM na oba OS |
+| Test awaryjny | Odłączenie AD i PAM, konsola OOB i escrow | Udane lokalne logowanie na Windows i RHEL |
+| Rollout | Konta na 150 Windows i 150 RHEL, w małych partiach per produkt | Wynik 100%, zgodny CMDB i Safe/Group |
+| Operacje | Testy rotacji, ćwiczenia offline, przeglądy uprawnień | Audyt, brak niewyjaśnionych odstępstw |
 
-## 6. Decyzje wymagane od managementu
+## Decyzje do zatwierdzenia
 
-1. Formalne potwierdzenie, że 150 hostów ze wspólnym hasłem w każdej kohorcie jest akceptowalnym ryzykiem, albo decyzja o mniejszych grupach.
-2. Wyznaczenie właściciela usługi oraz zespołów zatwierdzających awaryjny dostęp.
-3. Zatwierdzenie metody depozytu offline, lokalizacji kopii i wyznaczenie co najmniej dwóch kustoszy.
-4. Zatwierdzenie zasady „rotacja na żądanie”, z **obowiązkową rotacją po użyciu / incydencie** i eskalacją wyjątków.
-5. Zagwarantowanie operacyjnego czasu na testy kwartalne i ćwiczenia offline.
+1. Potwierdzić, że **produkty, nie systemy operacyjne**, wyznaczają granice haseł i odpowiedzialności.
+2. Zatwierdzić mapę serwer → produkt i sposób obsługi hostów współdzielonych.
+3. Zaakceptować ryzyko jednego wspólnego hasła w obrębie produktu oraz kontrole kompensujące.
+4. Wyznaczyć role: właściciel usługi, operator rotacji, osoba zatwierdzająca, kustosze depozytu, audytor.
+5. Zatwierdzić ręczną rotację z obowiązkową zmianą **po użyciu awaryjnym**, mimo braku rotacji okresowej.
+6. Zapewnić środowisko do testów CyberArk z docelowymi platformami Windows i RHEL.
 
-**Rekomendacja do zatwierdzenia:** uruchomić pilot, nie produkcję. Po potwierdzeniu zachowania CPM przy grupowej zmianie wskazanego hasła, udokumentowaniu możliwości odzyskania dostępu bez AD/PAM oraz zatwierdzeniu ryzyka wspólnego hasła zezwolić na stopniowe wdrożenie.
+**Rekomendacja:** zatwierdzić pilotaż modelu produktowego. Produkcyjne uruchomienie wymaga pozytywnego testu mieszanej Account Group i kontrolowanej rotacji wspólnego, wskazanego przez operatora hasła.
