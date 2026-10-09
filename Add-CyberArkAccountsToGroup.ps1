@@ -98,7 +98,7 @@ try {
     if (-not $script:token) { throw 'CyberArk authentication returned no token.' }
 
     $encodedSafe = [uri]::EscapeDataString($SafeName)
-    $groupResult = Invoke-Api Get "/api/Safes/$encodedSafe/AccountGroups"
+    $groupResult = Invoke-Api Get "/api/AccountGroups?Safe=$encodedSafe"
     $groups = @(Expand-ApiCollection $groupResult)
     $group = $groups | Where-Object {
         [string]::Equals([string](Get-Property $_ 'groupName'),$GroupName,[StringComparison]::OrdinalIgnoreCase)
@@ -109,7 +109,7 @@ try {
         if (-not $PSCmdlet.ShouldProcess($GroupName,'Create Account Group')) {
             Write-Host 'WhatIf: group creation skipped.'; return
         }
-        $group = Invoke-Api Post '/api/AccountGroups' @{
+        $group = Invoke-Api Post '/api/AccountGroups/' @{
             groupName=$GroupName
             groupPlatformId=$GroupPlatformId
             safe=$SafeName
