@@ -27,7 +27,6 @@
         name: "{{ bg_username }}"
         comment: "Emergency sudo account - controlled by PAM"
         shell: /bin/bash
-        group: "{{ bg_username }}"
         create_home: true
         groups: wheel
         append: true
