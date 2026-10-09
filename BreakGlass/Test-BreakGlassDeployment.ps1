@@ -1,111 +1,132 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Read-only audit of Break-Glass account group membership. Does not read secrets.
+  Read-only validation: one CyberArk Safe + Account Group PER PRODUCT,
+  with both Windows and RHEL hosts allowed in the same group.
+.DESCRIPTION
+  Manifest columns: product,safeName,groupName,groupPlatformId,os,address,platformId.
+  Never reads passwords or executes Change/Reconcile.
+.EXAMPLE
+  .\Test-BreakGlassDeployment.ps1 -ManifestCsv .\manifest.csv -PVWAURL https://pvwa.example.invalid/PasswordVault -ExpectedWindows 2 -ExpectedRHEL 2 -ReportCsv C:\Temp\bg-report.csv
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)][string]$SafeName,
-  [Parameter(Mandatory)][string]$ManifestCsv,
-  [Parameter(Mandatory)][string]$PVWAURL,
-  [ValidateSet('CyberArk','LDAP','Radius')][string]$AuthType='Radius',
-  [pscredential]$Credential,
-  [Parameter(Mandatory)][string]$WindowsGroupName,
-  [Parameter(Mandatory)][string]$RhelGroupName,
-  [int]$ExpectedWindows=150,
-  [int]$ExpectedRHEL=150,
-  [string]$ReportCsv
+ [Parameter(Mandatory)][string]$ManifestCsv,
+ [Parameter(Mandatory)][string]$PVWAURL,
+ [ValidateSet('CyberArk','LDAP','Radius')][string]$AuthType='Radius',
+ [pscredential]$Credential,
+ [int]$ExpectedWindows=150,
+ [int]$ExpectedRHEL=150,
+ [string]$ReportCsv
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $PVWAURL=$PVWAURL.TrimEnd('/')
 $rows=@(Import-Csv -LiteralPath $ManifestCsv)
-if(-not $Credential){$Credential=Get-Credential -Message 'Read-only CyberArk audit'}
-function Invoke-Get([string]$Path) {
-  Invoke-RestMethod -Uri "$PVWAURL$Path" -Method Get -Headers @{Authorization=$script:token} -ErrorAction Stop
+$win=@($rows | Where-Object os -eq 'Windows').Count
+$rhel=@($rows | Where-Object os -eq 'RHEL').Count
+if($win -ne $ExpectedWindows -or $rhel -ne $ExpectedRHEL){throw "Inventory Windows=$win/$ExpectedWindows; RHEL=$rhel/$ExpectedRHEL"}
+if(-not $Credential){$Credential=Get-Credential -Message 'CyberArk read-only audit'}
+function Api-Get([string]$Path) {
+ Invoke-RestMethod -Uri "$PVWAURL$Path" -Method Get -Headers @{Authorization=$script:token} -ErrorAction Stop
 }
-function Get-Items($Response){
-  if($Response -is [array]){return @($Response)}
-  foreach($key in @('value','members','accounts','groups')){
-    if($Response -and $Response.PSObject.Properties[$key]){
-      return @($Response.PSObject.Properties[$key].Value)
-    }
-  }
-  throw 'Unexpected API collection shape. Audit fails closed.'
+function Result-Items($Result){
+ if($Result -is [array]){return @($Result)}
+ foreach($field in @('value','accounts','groups','members')){
+  if($Result -and $Result.PSObject.Properties[$field]){return @($Result.PSObject.Properties[$field].Value)}
+ }
+ throw 'Unexpected API response shape'
 }
-function Get-Paged([string]$Path){
-  $items=[System.Collections.Generic.List[object]]::new()
-  $offset=0; $limit=100
-  do{
-    $separator=if($Path.Contains('?')){'&'}else{'?'}
-    $url=$Path + $separator + "limit=$limit&offset=$offset"
-    $response=Invoke-Get $url
-    $page=@(Get-Items $response | Where-Object {$null -ne $_})
-    foreach($item in $page){$items.Add($item)}
-    $offset+=$page.Count
-    if($offset -gt 10000){throw 'Exceeded pagination safety limit'}
-  }while($page.Count -eq $limit)
-  return @($items.ToArray())
+function Account-Pages([string]$SafeName) {
+ $list=[System.Collections.Generic.List[object]]::new();$offset=0;$limit=100
+ $filter=[uri]::EscapeDataString("safeName eq $SafeName")
+ do{
+  $response=Api-Get "/api/Accounts?filter=$filter&limit=$limit&offset=$offset"
+  $page=@(Result-Items $response | Where-Object {$null -ne $_})
+  foreach($a in $page){$list.Add($a)}
+  $offset+=$page.Count
+  if($offset -gt 10000){throw "Pagination exceeds safety limit: $SafeName"}
+ }while($page.Count -eq $limit)
+ return @($list.ToArray())
+}
+function Member-Pages([string]$GroupId){
+ $list=[System.Collections.Generic.List[object]]::new()
+ $id=[uri]::EscapeDataString($GroupId)
+ $path="/api/AccountGroups/$id/Members"
+ $steps=0
+ while($true){
+  $steps++
+  if($steps -gt 100){throw 'Group membership nextLink loop'}
+  $result=Api-Get $path
+  foreach($member in @(Result-Items $result)){if($null -ne $member){$list.Add($member)}}
+  $next=[string]$result.nextLink
+  if(-not $next){break}
+  if([uri]::IsWellFormedUriString($next,[UriKind]::Absolute)){
+   if(-not $next.StartsWith($PVWAURL,[StringComparison]::OrdinalIgnoreCase)){throw 'Group nextLink points outside PVWA'}
+   $path=$next.Substring($PVWAURL.Length)
+  }else{$path=$next}
+ }
+ return @($list.ToArray())
 }
 $script:token=$null
 try{
-  $body=@{username=$Credential.UserName;password=$Credential.GetNetworkCredential().Password;concurrentSession=$true} | ConvertTo-Json
-  $r=Invoke-RestMethod -Uri "$PVWAURL/api/Auth/$AuthType/Logon" -Method Post -ContentType 'application/json' -Body $body -ErrorAction Stop
-  $script:token=if($r -is [string]){$r.Trim()}else{[string]$r.CyberArkLogonResult}
-  if(-not $script:token){throw 'Missing CyberArk token'}
-  $safeEncoded=[uri]::EscapeDataString($SafeName)
-  $groups=@(Get-Items (Invoke-Get "/api/AccountGroups?Safe=$safeEncoded"))
-  $filter=[uri]::EscapeDataString("safeName eq $SafeName")
-  $accounts=@(Get-Paged "/api/Accounts?filter=$filter")
-  $assignments=@{}
-  $specs=@(
-    @{os='Windows';name=$WindowsGroupName;expected=$ExpectedWindows},
-    @{os='RHEL';name=$RhelGroupName;expected=$ExpectedRHEL}
-  )
-  foreach($spec in $specs){
-    $found=@($groups | Where-Object {$_.groupName -eq $spec.name})
-    if($found.Count -ne 1){throw "Expected one group $($spec.name), found $($found.Count)"}
-    $id=if($found[0].groupID){[string]$found[0].groupID}else{[string]$found[0].id}
-    if(-not $id){throw "Missing groupID for $($spec.name)"}
-    $escapedId=[uri]::EscapeDataString($id)
-    $members=@(Get-Paged "/api/AccountGroups/$escapedId/Members")
-    if($members.Count -ne $spec.expected){throw "$($spec.name): $($members.Count) members, expected $($spec.expected)"}
-    foreach($member in $members){
-      $memberID=if($member.accountID){[string]$member.accountID}else{[string]$member.id}
-      if(-not $memberID){throw 'Missing member accountID'}
-      if($assignments.ContainsKey($memberID)){throw "Duplicate group assignment for account $memberID"}
-      $assignments[$memberID]=$spec.os
-    }
+ $logon=@{username=$Credential.UserName;password=$Credential.GetNetworkCredential().Password;concurrentSession=$true} | ConvertTo-Json
+ $response=Invoke-RestMethod -Uri "$PVWAURL/api/Auth/$AuthType/Logon" -Method Post -ContentType 'application/json' -Body $logon -ErrorAction Stop
+ $script:token=if($response -is [string]){$response.Trim()}else{[string]$response.CyberArkLogonResult}
+ if(-not $script:token){throw 'Missing CyberArk session token'}
+ $report=[System.Collections.Generic.List[object]]::new()
+ $products=@($rows | Select-Object -ExpandProperty product -Unique)
+ $seen=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+ foreach($product in $products){
+  $subset=@($rows | Where-Object product -eq $product)
+  $safes=@($subset | Select-Object -ExpandProperty safeName -Unique)
+  $names=@($subset | Select-Object -ExpandProperty groupName -Unique)
+  $platforms=@($subset | Select-Object -ExpandProperty groupPlatformId -Unique)
+  if($safes.Count -ne 1 -or $names.Count -ne 1 -or $platforms.Count -ne 1){throw "Inconsistent product mapping $product"}
+  $safe=$safes[0];$groupName=$names[0];$groupPlatform=$platforms[0]
+  $all=@(Account-Pages $safe)
+  $groups=@(Result-Items (Api-Get "/api/AccountGroups?Safe=$([uri]::EscapeDataString($safe))"))
+  $matchedGroups=@($groups | Where-Object groupName -eq $groupName)
+  if($matchedGroups.Count -ne 1){throw "Product $product: group $groupName not unique"}
+  $g=$matchedGroups[0]
+  $id=if($g.groupID){[string]$g.groupID}else{[string]$g.id}
+  if(-not $id){throw "Missing group ID: $groupName"}
+  $foundPlatform=[string]$g.groupPlatformId
+  if(-not $foundPlatform){$foundPlatform=[string]$g.GroupPlatform}
+  if($foundPlatform -and $foundPlatform -ne $groupPlatform){throw "Group $groupName has wrong group platform: $foundPlatform"}
+  $members=@(Member-Pages $id)
+  if($members.Count -ne $subset.Count){throw "$product group count $($members.Count) != manifest $($subset.Count)"}
+  $memberIds=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach($m in $members){
+   $mid=if($m.accountID){[string]$m.accountID}else{[string]$m.id}
+   if(-not $mid -or -not $memberIds.Add($mid)){throw "Malformed or duplicate group membership: $product"}
   }
-  if($rows.Count -ne ($ExpectedWindows+$ExpectedRHEL)){throw 'Manifest count mismatch'}
-  $report=[System.Collections.Generic.List[object]]::new()
-  foreach($row in $rows){
-    if($row.os -notin @('Windows','RHEL')){throw "Unsupported OS $($row.os)"}
-    $found=@($accounts | Where-Object {
-      $_.safeName -eq $SafeName -and $_.address -eq $row.address -and
-      $_.userName -eq 'bguser' -and $_.platformId -eq $row.platformId
-    })
-    if($found.Count -ne 1){throw "Account missing/duplicate: $($row.address)"}
-    $a=$found[0]
-    if(-not $assignments.ContainsKey([string]$a.id) -or $assignments[[string]$a.id] -ne $row.os){
-      throw "Wrong membership: $($row.address)"
-    }
-    if($a.secretManagement -and $a.secretManagement.automaticManagementEnabled -eq $false){
-      throw "CPM account disabled: $($row.address)"
-    }
-    $groupForRow = if($row.os -eq 'Windows'){$WindowsGroupName}else{$RhelGroupName}
-    $report.Add([pscustomobject]@{
-      OS=$row.os; Address=$row.address; AccountId=$a.id
-      TargetPlatformId=$a.platformId; Group=$groupForRow
-    })
+  foreach($row in $subset){
+   if($row.os -notin @('Windows','RHEL')){throw "Unexpected OS $($row.os)"}
+   if(-not $seen.Add($row.address.Trim())){throw "Server $($row.address) belongs to multiple products"}
+   $accounts=@($all | Where-Object{
+    $_.safeName -eq $safe -and $_.address -eq $row.address.Trim() -and
+    $_.userName -eq 'bguser' -and $_.platformId -eq $row.platformId.Trim()
+   })
+   if($accounts.Count -ne 1){throw "$product / $($row.address): missing or duplicate CyberArk account"}
+   $a=$accounts[0]
+   if(-not $memberIds.Contains([string]$a.id)){throw "Missing Account Group membership for $product / $($row.address)"}
+   if($a.secretManagement -and $a.secretManagement.automaticManagementEnabled -eq $false){
+    throw "$product / $($row.address): CPM management disabled"
+   }
+   $report.Add([pscustomobject]@{
+    Product=$product;OS=$row.os;Address=$row.address;Safe=$safe;AccountGroup=$groupName;
+    AccountId=$a.id;TargetPlatform=$a.platformId
+   })
   }
-  if($assignments.Count -ne $rows.Count){throw 'Extra account group members outside manifest'}
-  if($ReportCsv){$report | Export-Csv -LiteralPath $ReportCsv -NoTypeInformation -Encoding UTF8}
-  Write-Host "PASS: $($rows.Count) accounts, $ExpectedWindows Windows, $ExpectedRHEL RHEL."
-  Write-Host 'NOTE: This checks membership and metadata only; not actual passwords or server login.'
+  Write-Host "PASS product=$product safe=$safe group=$groupName members=$($members.Count)"
+ }
+ if($ReportCsv){$report | Export-Csv -LiteralPath $ReportCsv -NoTypeInformation -Encoding UTF8}
+ Write-Host "PASS $($report.Count) accounts across $($products.Count) products: $win Windows + $rhel RHEL."
+ Write-Host 'This audit does NOT confirm local login, shared password, or CPM change success.'
 }finally{
-  if($script:token){
-    try{Invoke-RestMethod -Uri "$PVWAURL/api/Auth/Logoff" -Method Post -Headers @{Authorization=$script:token} -ErrorAction Stop | Out-Null}
-    catch{Write-Warning 'Failed to log off CyberArk session'}
-  }
+ if($script:token){
+  try{Invoke-RestMethod -Uri "$PVWAURL/api/Auth/Logoff" -Method Post -Headers @{Authorization=$script:token} -ErrorAction Stop | Out-Null}
+  catch{Write-Warning 'CyberArk Logoff failed'}
+ }
 }
