@@ -93,9 +93,10 @@ try{
     if($a.secretManagement -and $a.secretManagement.automaticManagementEnabled -eq $false){
       throw "CPM account disabled: $($row.address)"
     }
+    $groupForRow = if($row.os -eq 'Windows'){$WindowsGroupName}else{$RhelGroupName}
     $report.Add([pscustomobject]@{
       OS=$row.os; Address=$row.address; AccountId=$a.id
-      TargetPlatformId=$a.platformId; Group=if($row.os -eq 'Windows'){$WindowsGroupName}else{$RhelGroupName}
+      TargetPlatformId=$a.platformId; Group=$groupForRow
     })
   }
   if($assignments.Count -ne $rows.Count){throw 'Extra account group members outside manifest'}
