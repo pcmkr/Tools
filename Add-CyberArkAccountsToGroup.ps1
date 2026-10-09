@@ -112,13 +112,14 @@ try {
             Write-Host 'WhatIf: group creation skipped.'; return
         }
         $group = Invoke-Api Post '/api/AccountGroups/' @{
-            groupName=$GroupName
-            groupPlatformId=$GroupPlatformId
-            safe=$SafeName
+            GroupName=$GroupName
+            GroupPlatformID=$GroupPlatformId
+            Safe=$SafeName
         }
     }
     # Fail closed if a pre-existing group has the wrong group platform.
     $actualGroupPlatform = [string](Get-Property $group 'groupPlatformId')
+    if (-not $actualGroupPlatform) { $actualGroupPlatform = [string](Get-Property $group 'GroupPlatform') }
     if ($actualGroupPlatform -and -not [string]::Equals($actualGroupPlatform,$GroupPlatformId,[StringComparison]::OrdinalIgnoreCase)) {
         throw "Group '$GroupName' uses groupPlatformId '$actualGroupPlatform' instead of '$GroupPlatformId'."
     }
