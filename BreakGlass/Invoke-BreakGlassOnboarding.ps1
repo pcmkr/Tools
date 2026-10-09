@@ -45,6 +45,12 @@ foreach($row in $rows){
 }
 $win=@($rows | Where-Object os -eq Windows)
 $rhel=@($rows | Where-Object os -eq RHEL)
+# Do not allow the same CyberArk target platform in both independent password cohorts.
+$winPlatforms=@($win | ForEach-Object { $_.platformId.Trim() } | Select-Object -Unique)
+$rhelPlatforms=@($rhel | ForEach-Object { $_.platformId.Trim() } | Select-Object -Unique)
+foreach($platform in $winPlatforms){
+  if($platform -in $rhelPlatforms){throw "Target platform '$platform' occurs in both Windows and RHEL cohorts."}
+}
 if($win.Count -ne $ExpectedWindows -or $rhel.Count -ne $ExpectedRHEL){
   throw "Count mismatch Windows=$($win.Count)/$ExpectedWindows RHEL=$($rhel.Count)/$ExpectedRHEL"
 }
