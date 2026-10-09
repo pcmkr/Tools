@@ -22,6 +22,20 @@
       failed_when: "'Red Hat Enterprise Linux' not in bg_os_release.stdout"
 
   tasks:
+    - name: Reject an existing unmanaged local bguser account
+      ansible.builtin.shell: |
+        set -eu
+        if grep -q '^bguser:' /etc/passwd; then
+          comment=$(awk -F: '$1=="bguser" {print $5}' /etc/passwd)
+          test "$comment" = 'Emergency sudo account - controlled by PAM' || {
+            echo 'Existing unmanaged bguser detected'
+            exit 1
+          }
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: Ensure local account exists with initial password only
       ansible.builtin.user:
         name: "{{ bg_username }}"
