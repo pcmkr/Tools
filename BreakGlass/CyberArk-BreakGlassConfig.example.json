@@ -1,0 +1,57 @@
+{
+  "safe": {
+    "description": "Break-Glass controlled local administrator accounts - {SafeName}",
+    "location": "\\",
+    "managingCPM": "PasswordManager",
+    "olacEnabled": false,
+    "numberOfDaysRetention": 10
+  },
+  "roles": {
+    "Owner": {
+      "useAccounts": true, "retrieveAccounts": true, "listAccounts": true,
+      "addAccounts": true, "updateAccountContent": true,
+      "updateAccountProperties": true, "initiateCPMAccountManagementOperations": true,
+      "specifyNextAccountContent": true, "manageSafe": true,
+      "manageSafeMembers": true, "viewAuditLog": true, "viewSafeMembers": true
+    },
+    "RotationOperator": {
+      "listAccounts": true, "initiateCPMAccountManagementOperations": true,
+      "specifyNextAccountContent": true, "viewSafeMembers": true
+    },
+    "EmergencyAccess": {
+      "listAccounts": true, "useAccounts": true, "retrieveAccounts": true
+    },
+    "Auditor": {
+      "listAccounts": true, "viewAuditLog": true, "viewSafeMembers": true
+    }
+  },
+  "account": {
+    "address": "placeholder.invalid",
+    "platformId": "BG-Windows-Local",
+    "secretType": "password",
+    "platformAccountProperties": {},
+    "secretManagement": {
+      "automaticManagementEnabled": true
+    }
+  },
+  "defaults": {
+    "pvwaUrl": "https://pvwa.example.invalid/PasswordVault",
+    "authType": "Radius",
+    "accountUserName": "bguser",
+    "accountSecretEnvironmentVariable": "",
+    "accountSecret": null,
+    "adServer": "ad.example.invalid"
+  },
+  "safeMembers": [
+    {"role":"Owner","name":"Vault Admins","searchIn":"Vault","validateAD":false},
+    {"role":"Owner","groupSuffix":"_owner","searchIn":"EXAMPLE","validateAD":true},
+    {"role":"RotationOperator","groupSuffix":"_rotation","searchIn":"EXAMPLE","validateAD":true},
+    {"role":"EmergencyAccess","groupSuffix":"_emergency","searchIn":"EXAMPLE","validateAD":true},
+    {"role":"Auditor","groupSuffix":"_auditor","searchIn":"EXAMPLE","validateAD":true}
+  ],
+  "accountGroup": {
+    "name": "{SafeName}_WIN",
+    "groupPlatformId": "BG-Win-Group",
+    "createIfMissing": false
+  }
+}
