@@ -855,7 +855,7 @@ try {
         $groupName = Expand-TemplateValue ([string](Get-ObjectProperty $accountGroupConfig 'name'))
         $groupPlatformId = [string](Get-ObjectProperty $accountGroupConfig 'groupPlatformId')
         $safeEscaped = [uri]::EscapeDataString($SafeName)
-        $groupResponse = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/Safes/$safeEscaped/AccountGroups" -Headers $headers
+        $groupResponse = Invoke-CyberArkApi -Method Get -Uri "$PVWAURL/api/AccountGroups?Safe=$safeEscaped" -Headers $headers
         $groups = @()
         if ($null -ne (Get-ObjectProperty $groupResponse 'value')) { $groups = @($groupResponse.value) }
         elseif ($groupResponse -is [array]) { $groups = @($groupResponse) }
@@ -869,7 +869,7 @@ try {
                 throw "Account Group '$groupName' nie istnieje. Ustaw accountGroup.createIfMissing=true albo utworz ja recznie."
             }
             if ($PSCmdlet.ShouldProcess("Account Group '$groupName'", 'Utworzenie grupy kont')) {
-                $group = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/AccountGroups" -Headers $headers -Body @{
+                $group = Invoke-CyberArkApi -Method Post -Uri "$PVWAURL/api/AccountGroups/" -Headers $headers -Body @{
                     groupName = $groupName
                     groupPlatformId = $groupPlatformId
                     safe = $SafeName
