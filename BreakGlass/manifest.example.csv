@@ -1,5 +1,5 @@
-os,address,platformId
-Windows,win-test01.example.invalid,BG-Windows-Local
-Windows,win-test02.example.invalid,BG-Windows-Local
-RHEL,rhel-test01.example.invalid,BG-RHEL-Local
-RHEL,rhel-test02.example.invalid,BG-RHEL-Local
+product,safeName,groupName,groupPlatformId,os,address,platformId
+ERP,BG-ERP,BG-ERP-GRP,BG-Group-Manual,Windows,win-erp01.example.invalid,BG-Windows-Local
+ERP,BG-ERP,BG-ERP-GRP,BG-Group-Manual,RHEL,rhel-erp01.example.invalid,BG-RHEL-Local
+CRM,BG-CRM,BG-CRM-GRP,BG-Group-Manual,Windows,win-crm01.example.invalid,BG-Windows-Local
+CRM,BG-CRM,BG-CRM-GRP,BG-Group-Manual,RHEL,rhel-crm01.example.invalid,BG-RHEL-Local
