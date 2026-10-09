@@ -59,6 +59,7 @@ function Expand-ApiCollection {
     $items = Get-Property $Result 'value'
     if ($null -eq $items) { $items = Get-Property $Result 'accounts' }
     if ($null -eq $items) { $items = Get-Property $Result 'groups' }
+    if ($null -eq $items) { $items = Get-Property $Result 'members' }
     if ($null -eq $items) { return @($Result) }
     return @($items)
 }
@@ -127,10 +128,27 @@ try {
     $escapedGroup = [uri]::EscapeDataString($groupId)
     $memberResult = Invoke-Api Get "/api/AccountGroups/$escapedGroup/Members"
     $existingIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($member in @(Expand-ApiCollection $memberResult)) {
-        $id = [string](Get-Property $member 'accountID')
-        if (-not $id) { $id = [string](Get-Property $member 'id') }
-        if ($id) { [void]$existingIds.Add($id) }
+    $pageNumber = 0
+    while ($true) {
+        $pageNumber++
+        if ($pageNumber -gt 100) { throw 'Account Group pagination exceeded safety limit.' }
+        foreach ($member in @(Expand-ApiCollection $memberResult)) {
+            $id = [string](Get-Property $member 'accountID')
+            if (-not $id) { $id = [string](Get-Property $member 'id') }
+            if ($id) { [void]$existingIds.Add($id) }
+        }
+        $nextLink = [string](Get-Property $memberResult 'nextLink')
+        if (-not $nextLink) { break }
+        if ([uri]::IsWellFormedUriString($nextLink,[UriKind]::Absolute)) {
+            $nextUri = $nextLink
+        } else {
+            $nextUri = ([uri]::new(([uri]$PVWAURL),$nextLink)).AbsoluteUri
+        }
+        # Invoke-Api expects a path; reject cross-origin URLs.
+        if (-not $nextUri.StartsWith($PVWAURL,[StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Pagination nextLink points outside PVWA.'
+        }
+        $memberResult = Invoke-Api Get $nextUri.Substring($PVWAURL.Length)
     }
 
     $stats = [ordered]@{ Added=0; AlreadyMember=0; Failed=0; Planned=0 }
