@@ -9,9 +9,11 @@
     - name: Require secret provided through encrypted Ansible Vault or secret backend
       ansible.builtin.assert:
         that:
-          - bg_windows_password is defined
-          - bg_windows_password | length >= 20
-        fail_msg: "Provide bg_windows_password securely; do not put it in inventory or CLI."
+          - bg_product is defined
+          - bg_passwords is defined
+          - bg_product in bg_passwords
+          - bg_passwords[bg_product] | length >= 20
+        fail_msg: "Provide bg_passwords[bg_product] securely via encrypted Vault; never place passwords in inventory."
       no_log: true
 
     - name: Reject an existing unmanaged bguser account
@@ -34,7 +36,7 @@
     - name: Create account without resetting its password on subsequent runs
       ansible.windows.win_user:
         name: "{{ bg_username }}"
-        password: "{{ bg_windows_password }}"
+        password: "{{ bg_passwords[bg_product] }}"
         update_password: on_create
         state: present
         account_disabled: false
