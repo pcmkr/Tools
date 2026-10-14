@@ -15,6 +15,8 @@ Prywatne repozytorium z narzędziami administracyjnymi i audytowymi dla Active D
 | `New-CyberArkSafeAccount.ps1` | Tworzenie Safe, nadawanie uprawnień wg ról, onboarding konta i Reconcile |
 | `CyberArk-SafeConfig.example.json` | Przykładowa konfiguracja Safe, ról, członków i konta |
 | `Splunk-ADUserState.spl.md` | SPL do odtworzenia historii logowań i zmian stanu kont z Windows Security logs |
+| `Splunk-ADEnableDisableHistory.spl.md` | Historia włączeń (4722) i wyłączeń (4725) listy kont AD, z domeną, wykonawcą i DC |
+| `Splunk-ADAccountDisabled-4725.spl.md` | Audyt wyłącznie wyłączeń kont AD (4725), historia i ostatnie wyłączenie każdej pozycji |
 
 ---
 
