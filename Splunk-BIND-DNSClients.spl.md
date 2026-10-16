@@ -1,12 +1,16 @@
 # Splunk — audyt klientów DNS BIND
 
-Zapytania służą do ustalenia, **jakie adresy IP nadal korzystają ze wskazanych serwerów BIND**, kiedy kontaktowały się z nimi ostatnio i o jakie domeny pytały. Przydatne przed migracją/wyłączeniem serwerów DNS.
+Zapytania służą do ustalenia, **jakie adresy IP nadal korzystają z serwerów BIND**, kiedy kontaktowały się z nimi ostatnio i o jakie domeny pytały. Punktem wyjścia jest `eventtype=isc_bind_query`, a nie filtr fraz w `_raw`. W dodatku Splunk Add-on for ISC BIND adres klienta może być już w polu `src`, nazwa domeny w `query`, a typ rekordu w `record_type`. Parsowanie surowego logu jest wyłącznie rezerwowym źródłem danych.
 
 ## 1. Główny raport — klienci korzystający z serwerów BIND (ostatnie 30 dni)
 
 ```spl
-index=TU_WPISZ_INDEKS earliest=-30d host IN ("dns01", "dns02") "client" "query:"
-| rex field=_raw "client\s+(?:@0x[0-9a-fA-F]+\s+)?(?<KlientIP>[^\s#]+)#(?<PortKlienta>\d+)(?:\s+\([^)]+\))?:\s+query:\s+(?<Domena>\S+)\s+(?<KlasaDNS>\S+)\s+(?<TypDNS>\S+)"
+eventtype=isc_bind_query earliest=-30d
+| rex field=_raw "client\s+(?:@0x[0-9a-fA-F]+\s+)?(?<IPzRaw>[0-9a-fA-F:.]+)#\d+"
+| rex field=_raw "query:\s+(?<DomenazRaw>\S+)\s+\S+\s+(?<TypzRaw>\S+)"
+| eval KlientIP=replace(coalesce(src,src_ip,client_ip,IPzRaw),"#\d+$","")
+| eval Domena=coalesce(query,dns_query,qname,DomenazRaw)
+| eval TypDNS=coalesce(record_type,qtype,TypzRaw)
 | where isnotnull(KlientIP)
 | stats count AS LiczbaZapytan earliest(_time) AS PierwszeZapytanie latest(_time) AS OstatnieZapytanie dc(Domena) AS RozneDomeny latest(Domena) AS OstatniaDomena values(TypDNS) AS TypyZapytan BY host KlientIP
 | eval DniOdOstatniego=round((now()-OstatnieZapytanie)/86400,2)
@@ -18,14 +22,16 @@ index=TU_WPISZ_INDEKS earliest=-30d host IN ("dns01", "dns02") "client" "query:"
     cidrmatch("10.0.0.0/8",IPKlienta) OR cidrmatch("172.16.0.0/12",IPKlienta) OR cidrmatch("192.168.0.0/16",IPKlienta) OR cidrmatch("fc00::/7",IPKlienta), "Prywatny",
     cidrmatch("192.0.0.9/32",IPKlienta) OR cidrmatch("192.0.0.10/32",IPKlienta), "Publiczny",
     cidrmatch("0.0.0.0/8",IPKlienta) OR cidrmatch("100.64.0.0/10",IPKlienta) OR cidrmatch("127.0.0.0/8",IPKlienta) OR cidrmatch("169.254.0.0/16",IPKlienta) OR cidrmatch("192.0.0.0/24",IPKlienta) OR cidrmatch("192.0.2.0/24",IPKlienta) OR cidrmatch("192.88.99.0/24",IPKlienta) OR cidrmatch("198.18.0.0/15",IPKlienta) OR cidrmatch("198.51.100.0/24",IPKlienta) OR cidrmatch("203.0.113.0/24",IPKlienta) OR cidrmatch("224.0.0.0/4",IPKlienta) OR cidrmatch("240.0.0.0/4",IPKlienta) OR cidrmatch("::/128",IPKlienta) OR cidrmatch("::1/128",IPKlienta) OR cidrmatch("::ffff:0:0/96",IPKlienta) OR cidrmatch("100::/64",IPKlienta) OR cidrmatch("2001:db8::/32",IPKlienta) OR cidrmatch("fe80::/10",IPKlienta) OR cidrmatch("fec0::/10",IPKlienta) OR cidrmatch("ff00::/8",IPKlienta), "Specjalny/niepubliczny",
-    true(), "Publiczny"
+    cidrmatch("0.0.0.0/0",IPKlienta) OR cidrmatch("::/0",IPKlienta), "Publiczny",
+    true(), "Nieznany/nie-IP"
   )
 | table SerwerDNS IPKlienta TypAdresu LiczbaZapytan PierwszeZapytanie OstatnieZapytanie DniOdOstatniego RozneDomeny OstatniaDomena TypyZapytan
 ```
 
 **Dostosowanie:**
-- Zastąp TU_WPISZ_INDEKS indeksem zawierającym logi BIND, np. linux lub dns.
-- W host IN (...) podaj wartości pola Splunk **host** dla konkretnych serwerów DNS (nazwy/FQDN/IP zgodnie z indeksacją), np. ("dns-prod-01","dns-prod-02").
+- Zacznij od diagnostyki z sekcji 3, aby poznać rzeczywiste wartości pola `host` w eventtype.
+- Raport domyślnie pokazuje wszystkie serwery w `eventtype=isc_bind_query`. Aby wybrać konkretne, dodaj zaraz po `| where isnotnull(KlientIP)` linię `| search host IN ("dns01","dns02")`, podstawiając wartości potwierdzone w sekcji 3.
+- Pola `src`, `query`, `record_type` i `dest` zależą od konfiguracji dodatku; zapytanie dodatkowo próbuje odczytać klienta, domenę i typ rekordu z `_raw`.
 - earliest=-30d oznacza 30 dni; przy audycie przed wyłączeniem warto powtórzyć dla 60–90 dni, jeśli pozwalają na to retencja i koszt wyszukiwania.
 - Jeden wiersz = jedna para serwer DNS / adres IP klienta. DniOdOstatniego to czas od ostatniego zapytania, a nie gwarancja regularnego używania usługi.
 - **TypAdresu** klasyfikuje **IP klienta**, nie IP serwera DNS. „Prywatny” oznacza IPv4 RFC 1918 (10/8, 172.16/12, 192.168/16) lub IPv6 ULA (fc00::/7). „Publiczny” uwzględnia wyjątki 192.0.0.9 i 192.0.0.10 z rejestru IANA. „Specjalny/niepubliczny” obejmuje m.in. loopback, link-local, CGNAT, adresy dokumentacyjne i multicast. „Publiczny” oznacza pozostały adres niepasujący do podanych zakresów; nie gwarantuje, że adres jest aktualnie trasowany w Internecie.
@@ -37,8 +43,12 @@ index=TU_WPISZ_INDEKS earliest=-30d host IN ("dns01", "dns02") "client" "query:"
 Pozwala sprawdzić dokładnie jakie domeny i typy rekordów były odpytywane.
 
 ```spl
-index=TU_WPISZ_INDEKS earliest=-30d host IN ("dns01", "dns02") "client" "query:"
-| rex field=_raw "client\s+(?:@0x[0-9a-fA-F]+\s+)?(?<KlientIP>[^\s#]+)#(?<PortKlienta>\d+)(?:\s+\([^)]+\))?:\s+query:\s+(?<Domena>\S+)\s+(?<KlasaDNS>\S+)\s+(?<TypDNS>\S+)"
+eventtype=isc_bind_query earliest=-30d
+| rex field=_raw "client\s+(?:@0x[0-9a-fA-F]+\s+)?(?<IPzRaw>[0-9a-fA-F:.]+)#\d+"
+| rex field=_raw "query:\s+(?<DomenazRaw>\S+)\s+\S+\s+(?<TypzRaw>\S+)"
+| eval KlientIP=replace(coalesce(src,src_ip,client_ip,IPzRaw),"#\d+$","")
+| eval Domena=coalesce(query,dns_query,qname,DomenazRaw)
+| eval TypDNS=coalesce(record_type,qtype,TypzRaw)
 | where isnotnull(KlientIP)
 | sort 200 -_time
 | eval Data=strftime(_time,"%Y-%m-%d %H:%M:%S")
@@ -47,7 +57,8 @@ index=TU_WPISZ_INDEKS earliest=-30d host IN ("dns01", "dns02") "client" "query:"
     cidrmatch("10.0.0.0/8",IPKlienta) OR cidrmatch("172.16.0.0/12",IPKlienta) OR cidrmatch("192.168.0.0/16",IPKlienta) OR cidrmatch("fc00::/7",IPKlienta), "Prywatny",
     cidrmatch("192.0.0.9/32",IPKlienta) OR cidrmatch("192.0.0.10/32",IPKlienta), "Publiczny",
     cidrmatch("0.0.0.0/8",IPKlienta) OR cidrmatch("100.64.0.0/10",IPKlienta) OR cidrmatch("127.0.0.0/8",IPKlienta) OR cidrmatch("169.254.0.0/16",IPKlienta) OR cidrmatch("192.0.0.0/24",IPKlienta) OR cidrmatch("192.0.2.0/24",IPKlienta) OR cidrmatch("192.88.99.0/24",IPKlienta) OR cidrmatch("198.18.0.0/15",IPKlienta) OR cidrmatch("198.51.100.0/24",IPKlienta) OR cidrmatch("203.0.113.0/24",IPKlienta) OR cidrmatch("224.0.0.0/4",IPKlienta) OR cidrmatch("240.0.0.0/4",IPKlienta) OR cidrmatch("::/128",IPKlienta) OR cidrmatch("::1/128",IPKlienta) OR cidrmatch("::ffff:0:0/96",IPKlienta) OR cidrmatch("100::/64",IPKlienta) OR cidrmatch("2001:db8::/32",IPKlienta) OR cidrmatch("fe80::/10",IPKlienta) OR cidrmatch("fec0::/10",IPKlienta) OR cidrmatch("ff00::/8",IPKlienta), "Specjalny/niepubliczny",
-    true(), "Publiczny"
+    cidrmatch("0.0.0.0/0",IPKlienta) OR cidrmatch("::/0",IPKlienta), "Publiczny",
+    true(), "Nieznany/nie-IP"
   )
 | table Data SerwerDNS IPKlienta TypAdresu Domena TypDNS KlasaDNS
 ```
@@ -56,15 +67,45 @@ W celu sprawdzenia konkretnego klienta dodaj przed sort: | search KlientIP="192.
 
 ## 3. Diagnostyka — gdzie znajdują się logi zapytań BIND?
 
-Jeżeli nie znasz indeksu albo sourcetype, wykonaj ograniczone czasowo wyszukiwanie:
+Najpierw sprawdź wszystkie serwery widoczne w eventtype oraz to, czy dodatek wydobywa pola. Zdarzenie z pustym `src` nie musi oznaczać, że nie było zapytania:
 
 ```spl
-index=* earliest=-24h "client" "query:"
-| stats count AS LiczbaZdarzen BY index host sourcetype source
+eventtype=isc_bind_query earliest=-30d
+| stats count AS LiczbaZdarzen count(src) AS ZPoleSrc count(query) AS ZPoleQuery count(record_type) AS ZPoleRecordType BY index host sourcetype
 | sort 0 -LiczbaZdarzen
 ```
 
-Wyniki pomogą ustalić prawidłowy index i host. Jeśli nie ma wyników, zweryfikuj okres, zbieranie logów oraz konfigurację kategorii queries w BIND. Nie oznacza to automatycznie, że brak ruchu.
+Wyniki pozwalają zweryfikować właściwy `host` i stopień wyodrębniania pól. W razie wątpliwości obejrzyj surowe zdarzenia:
+
+```spl
+eventtype=isc_bind_query earliest=-24h
+| table _time host sourcetype src src_ip client_ip dest query record_type query_type _raw
+| head 20
+```
+
+**Kontrola utraconych klientów przy agregacji** — to zapytanie liczy także zdarzenia, w których nie udało się odczytać adresu klienta:
+
+```spl
+eventtype=isc_bind_query earliest=-30d
+| rex field=_raw "client\s+(?:@0x[0-9a-fA-F]+\s+)?(?<IPzRaw>[0-9a-fA-F:.]+)#\d+"
+| eval MaPoleIP=if(isnotnull(coalesce(src,src_ip,client_ip)),1,0)
+| eval MaIPzRaw=if(isnotnull(IPzRaw),1,0)
+| eval BrakIP=if(MaPoleIP=0 AND MaIPzRaw=0,1,0)
+| stats count AS WszystkieZdarzenia sum(MaPoleIP) AS ZPoleIP sum(MaIPzRaw) AS ZIPzRaw sum(BrakIP) AS BezRozpoznanegoIP BY host sourcetype
+| sort 0 -WszystkieZdarzenia
+```
+
+`ZPoleIP` i `ZIPzRaw` mogą liczyć te same zdarzenia, więc nie należy ich sumować. Jeśli `BezRozpoznanegoIP` jest większe od zera, sprawdź przykładowe rekordy:
+
+```spl
+eventtype=isc_bind_query earliest=-7d
+| rex field=_raw "client\s+(?:@0x[0-9a-fA-F]+\s+)?(?<IPzRaw>[0-9a-fA-F:.]+)#\d+"
+| where isnull(coalesce(src,src_ip,client_ip,IPzRaw))
+| table _time host sourcetype _raw
+| head 50
+```
+
+Jeżeli eventtype nie zawiera zdarzeń z oczekiwanych serwerów, sprawdź definicję eventtype, sourcetype, uprawnienia, logowanie na BIND, retencję i sposób przekazywania logów. Brak logów nie jest dowodem braku ruchu DNS.
 
 ## 4. Alternatywa — logi firewall / NetFlow zamiast logów BIND
 
@@ -84,7 +125,8 @@ index=TU_WPISZ_INDEKS_SIECIOWY earliest=-30d
     cidrmatch("10.0.0.0/8",IPKlienta) OR cidrmatch("172.16.0.0/12",IPKlienta) OR cidrmatch("192.168.0.0/16",IPKlienta) OR cidrmatch("fc00::/7",IPKlienta), "Prywatny",
     cidrmatch("192.0.0.9/32",IPKlienta) OR cidrmatch("192.0.0.10/32",IPKlienta), "Publiczny",
     cidrmatch("0.0.0.0/8",IPKlienta) OR cidrmatch("100.64.0.0/10",IPKlienta) OR cidrmatch("127.0.0.0/8",IPKlienta) OR cidrmatch("169.254.0.0/16",IPKlienta) OR cidrmatch("192.0.0.0/24",IPKlienta) OR cidrmatch("192.0.2.0/24",IPKlienta) OR cidrmatch("192.88.99.0/24",IPKlienta) OR cidrmatch("198.18.0.0/15",IPKlienta) OR cidrmatch("198.51.100.0/24",IPKlienta) OR cidrmatch("203.0.113.0/24",IPKlienta) OR cidrmatch("224.0.0.0/4",IPKlienta) OR cidrmatch("240.0.0.0/4",IPKlienta) OR cidrmatch("::/128",IPKlienta) OR cidrmatch("::1/128",IPKlienta) OR cidrmatch("::ffff:0:0/96",IPKlienta) OR cidrmatch("100::/64",IPKlienta) OR cidrmatch("2001:db8::/32",IPKlienta) OR cidrmatch("fe80::/10",IPKlienta) OR cidrmatch("fec0::/10",IPKlienta) OR cidrmatch("ff00::/8",IPKlienta), "Specjalny/niepubliczny",
-    true(), "Publiczny"
+    cidrmatch("0.0.0.0/0",IPKlienta) OR cidrmatch("::/0",IPKlienta), "Publiczny",
+    true(), "Nieznany/nie-IP"
   )
 | table IPSerwera IPKlienta TypAdresu LiczbaZdarzen PierwszaObserwacja OstatniaObserwacja
 ```
@@ -98,7 +140,7 @@ index=TU_WPISZ_INDEKS_SIECIOWY earliest=-30d
    - client 192.0.2.50#49812: query: example.org IN AAAA +SE
    - Obsługiwane są obie postacie (z identyfikatorem @0x i bez), w tym adresy IPv6.
 2. Klasyfikacja adresów opiera się na funkcji Splunk `cidrmatch`, obsługującej IPv4 i IPv6. To praktyczne rozróżnienie najważniejszych zakresów, a nie pełna bieżąca weryfikacja globalnej osiągalności według wszystkich rejestrów IANA. Dla nietypowych zakresów specjalnych sprawdź rejestry IANA przed podjęciem decyzji operacyjnej.
-3. Regex parsuje treść _raw i nie wymaga wcześniej zdefiniowanych pól klienta. **host** musi reprezentować serwer DNS; przy syslog relay/centralnym kolektorze może oznaczać forwarder — wtedy filtruj po poprawnym polu docelowego urządzenia lub adresie docelowym z danych.
+3. Zapytania preferują pola dodatku (`src`, `query`, `record_type`), a regex `_raw` wykorzystują tylko jako uzupełnienie. `query_type` w niektórych wersjach dodatku oznacza operację `Query` i nie powinno zastępować pola `record_type`. **host** musi reprezentować serwer DNS; przy syslog relay/centralnym kolektorze może oznaczać forwarder — wtedy filtruj po poprawnym polu docelowego urządzenia lub adresie docelowym z danych.
 4. Jeśli klient korzysta z pośredniego resolvera, przekierowania lub NAT, log BIND może identyfikować **resolver pośredniczący / adres po NAT**, nie pierwotnego klienta.
 5. **Brak wyników nie jest dowodem braku użycia DNS.** Sprawdź retencję, ciągłość przesyłania logów, włączone query logging, wszystkie interfejsy/instancje i pomijane ścieżki ruchu. Należy porównać wyniki z telemetrią sieciową przed wyłączeniem.
 6. Włączenie pełnego query logging może być kosztowne przy wysokim ruchu DNS. W BIND 9 można sterować logowaniem zapytań podczas pracy przez rndc querylog on/off; docelowy kanał musi być poprawnie skonfigurowany, a zmianę należy wykonać zgodnie z zasadami eksploatacyjnymi.
